@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <title>Assembly Learning AI</title>
+    <style>
+        /* --- Basic Reset & Background --- */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(120deg, #84fab0, #8fd3f4, #a18cd1, #fbc2eb);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+            padding: 10px; /* Provides a small buffer on mobile screens */
+        }
+
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        /* --- Main Glass Panel --- */
+        .chat-container {
+            width: 100%;
+            max-width: 800px;
+            height: 90vh; /* Takes up 90% of the screen height */
+            
+            /* Glassmorphism Effect */
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+
+            /* Flexbox to structure the chat window */
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- Chat Messages Area --- */
+        #chat-messages {
+            flex-grow: 1;
+            padding: 20px;
+            overflow-y: auto; /* Allows scrolling for messages */
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            padding: 10px 15px;
+            border-radius: 18px;
+            max-width: 80%;
+            line-height: 1.4;
+        }
+
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .ai-message {
+            background-color: #f1f0f0;
+            color: #333;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .ai-message.typing {
+            color: #888;
+            font-style: italic;
+        }
+
+        /* --- Input Form Area --- */
+        #chat-form {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        #user-input {
+            flex-grow: 1;
+            border: none;
+            padding: 12px 15px;
+            border-radius: 20px;
+            font-size: 16px;
+            background: rgba(255, 255, 255, 0.3);
+            outline: none;
+            margin-right: 10px;
+        }
+
+        #send-button {
+            border: none;
+            background: #007bff;
+            color: white;
+            font-weight: bold;
+            padding: 0 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+        #send-button:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <main class="chat-container">
+        <section id="chat-messages">
+            <div class="message ai-message">
+                Hello! What would you like to learn today?
+            </div>
+        </section>
+        <footer id="chat-form">
+            <input type="text" id="user-input" placeholder="Ask a question..." autocomplete="off">
+            <button id="send-button">Send</button>
+        </footer>
+    </main>
+
+    <script>
+        // --- DOM Element Selection ---
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        const chatMessages = document.getElementById('chat-messages');
+
+        // --- Event Listener for Form Submission ---
+        chatForm.addEventListener('submit', handleFormSubmit);
+
+        async function handleFormSubmit(event) {
+            event.preventDefault(); // Prevents the webpage from reloading
+
+            const messageText = userInput.value.trim();
+            if (!messageText) return; // Don't send empty messages
+
+            // 1. Display the user's message immediately
+            addMessageToChat(messageText, 'user-message');
+            userInput.value = ''; // Clear the input box
+
+            // 2. Show a "typing..." indicator for better UX
+            const typingIndicator = addMessageToChat('AI is thinking...', 'ai-message typing');
+
+            try {
+                // 3. Send the message to your live backend API
+                const response = await fetch('http://165.227.109.220:8000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: messageText,
+                        user_id: 'user123' // Using a placeholder user ID for now
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+
+                const data = await response.json();
+                
+                // 4. Remove the typing indicator and display the AI's real response
+                chatMessages.removeChild(typingIndicator);
+                addMessageToChat(data.reply, 'ai-message');
+
+            } catch (error) {
+                // 5. Handle errors
+                chatMessages.removeChild(typingIndicator);
+                addMessageToChat('Sorry, I ran into an error. Please try again.', 'ai-message');
+                console.error('Fetch Error:', error);
+            }
+        }
+
+        // --- Helper function to add messages to the chat window ---
+        function addMessageToChat(text, className) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${className}`;
+            messageDiv.textContent = text;
+            chatMessages.appendChild(messageDiv);
+
+            // Scroll to the bottom to see the latest message
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return messageDiv; // Return the element so we can remove it if needed
+        }
+    </script>
+
+</body>
+</html>
