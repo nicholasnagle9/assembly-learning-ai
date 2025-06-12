@@ -1,30 +1,41 @@
-# main.py (Updated with CORS)
+# main.py (Updated to connect to MySQL)
 
 import os
+import mysql.connector # <--- NEW: Import the MySQL library
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware #<-- NEW IMPORT
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-# import google.generativeai as genai 
-# from dotenv import load_dotenv
+from dotenv import load_dotenv # <--- NEW: To read the .env file
+
+# Load the environment variables from .env file
+load_dotenv()
+
+# --- NEW: Function to get a database connection ---
+def get_db_connection():
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME")
+        )
+        print("Database connection successful!")
+        return conn
+    except mysql.connector.Error as e:
+        print(f"Error connecting to MySQL Database: {e}")
+        return None
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
 
 # --- CORS Middleware Configuration ---
-# This is the new section that fixes the error.
-# It tells the browser that it's okay for your frontend to make requests to this backend.
-origins = [
-    "http://ai-tutor.local", # The address of your frontend
-    "http://165.227.109.220", # Your server's IP
-    "*" # A wildcard, good for development
-]
-
+origins = ["*"] # Allowing all for development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"], # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Pydantic Model for a user's message ---
@@ -35,14 +46,35 @@ class ChatRequest(BaseModel):
 # --- The Main Chat Endpoint ---
 @app.post("/chat")
 async def chat_handler(chat_request: ChatRequest):
-    """
-    This is the main endpoint that will eventually contain our Assembly Logic.
-    For the rough draft, it will just echo the message back.
-    """
     print(f"Received message: '{chat_request.message}' from user: {chat_request.user_id}")
     
-    ai_response = f"You said: '{chat_request.message}'. The AI logic is not yet connected."
-    
+    # --- NEW: Database Logic ---
+    # This is our first test to see if we can read from the DB.
+    db_connection = get_db_connection()
+    if not db_connection:
+        return {"reply": "Error: Could not connect to the database."}
+
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        
+        # A simple query to get the very first skill from our Knowledge Graph
+        cursor.execute("SELECT * FROM Skills WHERE skill_id = 1;")
+        first_skill = cursor.fetchone()
+        
+        if first_skill:
+            # If successful, send the skill name back to the user
+            ai_response = f"DB Connection OK! First skill in graph: {first_skill['skill_name']}"
+        else:
+            ai_response = "DB Connection OK, but could not find skill #1."
+
+    except Exception as e:
+        ai_response = f"An error occurred while querying the database: {e}"
+    finally:
+        if db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
+            print("Database connection closed.")
+
     return {"reply": ai_response}
 
 
