@@ -1,10 +1,10 @@
-# main.py (Upgraded with API Timeouts and better logging)
+# main.py (Full MVP Logic with all features)
 
 import os
-import json
+import json 
 import mysql.connector
 import google.generativeai as genai
-from google.api_core import exceptions as google_exceptions # <--- NEW: Import for specific exceptions
+from google.api_core import exceptions as google_exceptions
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,7 +16,7 @@ app = FastAPI()
 
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    # NEW: Configure the API call with a timeout of 60 seconds
+    # Configure the API call with a 60-second timeout
     request_options = {"timeout": 60} 
     generative_model = genai.GenerativeModel(
         'gemini-1.5-flash',
@@ -26,8 +26,15 @@ except Exception as e:
     print(f"Error configuring Google AI: {e}")
     generative_model = None
 
-# ... (All other helper functions like get_db_connection, get_mastered_skills, find_next_skill remain the same) ...
+# --- In-Memory State Management (for this MVP) ---
+# This dictionary will hold the current learning state for each user.
+# Format: { "username": {"current_skill_id": 1, "numeric_user_id": 1, "skill_name": "...", "phase": "Crawl"} }
+user_session_state = {}
+
+
+# --- Database & Helper Functions ---
 def get_db_connection():
+    """Creates and returns a connection to the MySQL database."""
     try:
         conn = mysql.connector.connect(
             host=os.getenv("DB_HOST"),
@@ -41,6 +48,7 @@ def get_db_connection():
         return None
 
 def get_mastered_skills(cursor, numeric_user_id):
+    """Queries the database to get a set of skill_ids the user has mastered."""
     query = "SELECT skill_id FROM User_Skills WHERE user_id = %s"
     cursor.execute(query, (numeric_user_id,))
     mastered_ids = set(map(lambda row: row['skill_id'], cursor.fetchall()))
@@ -48,27 +56,42 @@ def get_mastered_skills(cursor, numeric_user_id):
     return mastered_ids
 
 def find_next_skill(cursor, mastered_skills, goal_skill_id):
+    """
+    Recursively finds the first unmastered prerequisite for a given goal skill.
+    This is the heart of the Assembly Logic.
+    """
     if goal_skill_id in mastered_skills:
         return None
+
     query = "SELECT prerequisite_id FROM Prerequisites WHERE skill_id = %s"
     cursor.execute(query, (goal_skill_id,))
     prerequisites = cursor.fetchall()
+
     if not prerequisites:
         return goal_skill_id
+
     for prereq in prerequisites:
         skill_to_learn = find_next_skill(cursor, mastered_skills, prereq['prerequisite_id'])
         if skill_to_learn is not None:
             return skill_to_learn
+    
     return goal_skill_id
-# --- End of helper functions ---
 
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# --- FastAPI App & Middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ChatRequest(BaseModel):
     message: str
-    user_id: str
+    user_id: str # This is treated as the username
 
+# --- Main Chat Endpoint ---
 @app.post("/chat")
 async def chat_handler(chat_request: ChatRequest):
     username = chat_request.user_id
@@ -82,6 +105,7 @@ async def chat_handler(chat_request: ChatRequest):
     try:
         cursor = db_connection.cursor(dictionary=True)
         
+        # --- Get or Create User ---
         cursor.execute("SELECT user_id FROM Users WHERE username = %s", (username,))
         user_record = cursor.fetchone()
         
@@ -93,9 +117,10 @@ async def chat_handler(chat_request: ChatRequest):
         else:
             numeric_user_id = user_record['user_id']
 
+        # --- State Machine Logic ---
         if username not in user_session_state:
             mastered_skills = get_mastered_skills(cursor, numeric_user_id)
-            goal_skill_id = 7
+            goal_skill_id = 7 # Hardcoded goal: "Solving Two-Step Equations"
             next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
 
             if next_skill_id:
@@ -114,19 +139,18 @@ async def chat_handler(chat_request: ChatRequest):
         skill_name = current_session['skill_name']
         phase = current_session['phase']
 
-        # --- Dynamic Prompt Generation ---
+        # --- Dynamic Prompt Generation & AI Call ---
         system_prompt = ""
-        # ... (Crawl, Walk, Run, Summary prompt definitions are the same) ...
         if phase == "Crawl":
-            system_prompt = f"You are a teacher. Your task is to EXPLAIN the concept of '{skill_name}'. Use Markdown for formatting: use bolding for key terms, use lists for steps, and wrap all mathematical examples in code blocks. Keep it simple and clear. End by asking if the user understands."
+            system_prompt = f"You are a teacher. Your task is to EXPLAIN the concept of '{skill_name}'. Use Markdown for formatting: use bolding for key terms, lists, and wrap all math in `code blocks`. Keep it simple. End by asking if the user understands."
             user_session_state[username]['phase'] = 'Walk'
 
         elif phase == "Walk":
-            system_prompt = f"You are a friendly tutor. The user has learned the definition of '{skill_name}'. Your task is to GUIDE them through a simple, interactive example of it. Use Markdown for formatting and wrap all math in code blocks. Ask leading questions."
+            system_prompt = f"You are a friendly tutor. The user has learned the definition of '{skill_name}'. Your task is to GUIDE them through a simple, interactive example. Use Markdown and wrap math in `code blocks`. Ask leading questions."
             user_session_state[username]['phase'] = 'Run'
 
         elif phase == "Run":
-            system_prompt = f"You are an examiner. Your task is to assess if the user has mastered '{skill_name}'. Give them a direct question or problem to solve. Then, analyze their answer. Respond ONLY with a single, minified JSON object in the format: {{\"is_correct\": boolean, \"feedback\": \"Your short, encouraging feedback here.\"}}. For example: {{\"is_correct\":true,\"feedback\":\"Perfect! That's exactly right.\"}} or {{\"is_correct\":false,\"feedback\":\"Not quite. Remember to distribute the negative sign.\"}}"
+            system_prompt = f"You are an examiner. Assess if the user mastered '{skill_name}'. Ask a direct question. Analyze their answer. Respond ONLY with a single, minified JSON object in the format: {{\"is_correct\": boolean, \"feedback\": \"Your short, encouraging feedback here.\"}}. Example: {{\"is_correct\":true,\"feedback\":\"Perfect!\"}}"
             
             print("--- Entering RUN phase ---")
             full_prompt = f"{system_prompt}\n\nHere is the user's answer to your previous question: '{user_message}'"
@@ -145,14 +169,11 @@ async def chat_handler(chat_request: ChatRequest):
                     user_id = current_session['numeric_user_id']
                     cursor.execute("INSERT INTO User_Skills (user_id, skill_id) VALUES (%s, %s) ON DUPLICATE KEY UPDATE skill_id=skill_id", (user_id, skill_id))
                     db_connection.commit()
-                    print(f"User ID {user_id} mastered skill ID: {skill_id}")
                     user_session_state[username]['phase'] = 'Summary'
                     ai_response += f"\n\n**You've mastered: {skill_name}!**"
-            
-            # --- NEW: Catch specific API errors ---
             except (google_exceptions.DeadlineExceeded, google_exceptions.ServiceUnavailable) as e:
                 print(f"API Timeout or Service Unavailable: {e}")
-                ai_response = "Sorry, I'm having trouble connecting to my core brain right now. The service may be temporarily unavailable. Please try again in a moment."
+                ai_response = "Sorry, I'm having trouble connecting to my core brain right now. Please try again in a moment."
             except json.JSONDecodeError:
                 print(f"AI did not return valid JSON. Response: {response_text}")
                 ai_response = "I'm having a little trouble evaluating that response. Let's try that again."
@@ -166,12 +187,12 @@ async def chat_handler(chat_request: ChatRequest):
              if next_skill_id:
                  cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (next_skill_id,))
                  next_skill_record = cursor.fetchone()
-                 system_prompt = f"The user has just mastered '{skill_name}'. Briefly congratulate them and introduce the next topic, which is '{next_skill_record['skill_name']}'. Explain why it's the next logical step. End by asking if they are ready to continue."
+                 system_prompt = f"The user just mastered '{skill_name}'. Briefly congratulate them and introduce the next topic: '{next_skill_record['skill_name']}'. Explain why it's the next logical step. End by asking if they are ready to continue."
              else:
                  system_prompt = "The user has just mastered the final skill. Congratulate them on completing the entire learning path."
              del user_session_state[username]
 
-        # --- AI Call for Crawl, Walk, Summary Phases ---
+        # This call handles Crawl, Walk, and the new Summary phase
         try:
             print(f"--- Calling AI for {phase} phase ---")
             response = generative_model.generate_content(system_prompt)
