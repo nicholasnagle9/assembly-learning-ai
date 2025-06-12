@@ -1,4 +1,4 @@
-# main.py (Corrected Google AI API call)
+# main.py (Final version with JSON cleanup)
 
 import os
 import json 
@@ -16,20 +16,17 @@ app = FastAPI()
 
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    # REMOVED the bad argument from this line
-    generative_model = genai.GenerativeModel('gemini-1.5-flash') 
+    request_options = {"timeout": 300} 
+    generative_model = genai.GenerativeModel(
+        'gemini-1.5-flash'
+    )
 except Exception as e:
     print(f"Error configuring Google AI: {e}")
     generative_model = None
 
-# --- NEW: Define the request options here ---
-# We will pass this dictionary to each API call.
-request_options = {"timeout": 100}
-
-# --- In-Memory State Management ---
 user_session_state = {}
 
-# --- Database & Helper Functions (no changes here) ---
+# --- Database & Helper Functions (no changes) ---
 def get_db_connection():
     try:
         conn = mysql.connector.connect(
@@ -110,12 +107,7 @@ async def chat_handler(chat_request: ChatRequest):
             if next_skill_id:
                 cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (next_skill_id,))
                 skill_record = cursor.fetchone()
-                user_session_state[username] = {
-                    "current_skill_id": next_skill_id,
-                    "numeric_user_id": numeric_user_id,
-                    "skill_name": skill_record['skill_name'],
-                    "phase": "Crawl"
-                }
+                user_session_state[username] = { "current_skill_id": next_skill_id, "numeric_user_id": numeric_user_id, "skill_name": skill_record['skill_name'], "phase": "Crawl" }
             else:
                 return {"reply": "### Congratulations!\n\nYou have mastered the entire Algebra path! Great work."}
 
@@ -138,11 +130,24 @@ async def chat_handler(chat_request: ChatRequest):
             full_prompt = f"{system_prompt}\n\nHere is the user's answer to your previous question: '{user_message}'"
             
             try:
-                # Add the request_options here
+                print("Attempting to call Google AI API...")
                 response = generative_model.generate_content(full_prompt, request_options=request_options)
                 response_text = response.text
+                print(f"Received from AI: {response_text}")
 
-                assessment = json.loads(response_text)
+                # --- NEW: JSON Cleanup Logic ---
+                # Find the start and end of the JSON object
+                start_index = response_text.find('{')
+                end_index = response_text.rfind('}')
+                
+                if start_index != -1 and end_index != -1:
+                    json_string = response_text[start_index:end_index+1]
+                    assessment = json.loads(json_string)
+                else:
+                    # If no JSON object is found, raise an error to be caught below
+                    raise json.JSONDecodeError("No JSON object found in AI response", response_text, 0)
+                # --- End of Cleanup Logic ---
+                
                 ai_response = assessment.get("feedback", "I had trouble parsing the assessment.")
                 
                 if assessment.get("is_correct") == True:
@@ -172,7 +177,6 @@ async def chat_handler(chat_request: ChatRequest):
              del user_session_state[username]
 
         try:
-            # Add the request_options here as well
             response = generative_model.generate_content(system_prompt, request_options=request_options)
             ai_response = response.text
         except (google_exceptions.DeadlineExceeded, google_exceptions.ServiceUnavailable) as e:
@@ -180,6 +184,7 @@ async def chat_handler(chat_request: ChatRequest):
         
     except Exception as e:
         ai_response = f"A critical error occurred: {e}"
+        print(e)
     finally:
         if db_connection and db_connection.is_connected():
             cursor.close()
