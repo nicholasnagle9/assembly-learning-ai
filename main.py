@@ -1,17 +1,36 @@
+# main.py (Updated with CORS)
+
 import os
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware #<-- NEW IMPORT
 from pydantic import BaseModel
-# We will add more imports here later
 # import google.generativeai as genai 
 # from dotenv import load_dotenv
+
+# --- FastAPI App Initialization ---
+app = FastAPI()
+
+# --- CORS Middleware Configuration ---
+# This is the new section that fixes the error.
+# It tells the browser that it's okay for your frontend to make requests to this backend.
+origins = [
+    "http://ai-tutor.local", # The address of your frontend
+    "http://165.227.109.220", # Your server's IP
+    "*" # A wildcard, good for development
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allows all headers
+)
 
 # --- Pydantic Model for a user's message ---
 class ChatRequest(BaseModel):
     message: str
-    user_id: str # In the future, we'll use this to track progress
-
-# --- FastAPI App Initialization ---
-app = FastAPI()
+    user_id: str
 
 # --- The Main Chat Endpoint ---
 @app.post("/chat")
@@ -22,14 +41,6 @@ async def chat_handler(chat_request: ChatRequest):
     """
     print(f"Received message: '{chat_request.message}' from user: {chat_request.user_id}")
     
-    # TODO:
-    # 1. Load user's mastered_skills from database based on user_id.
-    # 2. Run Assembly Logic to find the next topic.
-    # 3. Enter the Crawl, Walk, or Run phase.
-    # 4. Generate the correct system prompt.
-    # 5. Send prompt to Google AI and get response.
-
-    # For now, just send a simple reply:
     ai_response = f"You said: '{chat_request.message}'. The AI logic is not yet connected."
     
     return {"reply": ai_response}
