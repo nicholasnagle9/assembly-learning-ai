@@ -1,0 +1,26 @@
+{
+  "Solving Linear Equations": {
+    "name": "Solving Linear Equations (e.g., 2x + 5 = 15)",
+    "prerequisites": ["Combining Like Terms", "The Concept of an Equation"]
+  },
+  "Combining Like Terms": {
+    "name": "Combining Like Terms (e.g., 3x + 2x = 5x)",
+    "prerequisites": ["Basic Arithmetic with Variables"]
+  },
+  "Basic Arithmetic with Variables": {
+    "name": "Basic Arithmetic with Variables (e.g., x + x)",
+    "prerequisites": ["Understanding Variables"]
+  },
+  "The Concept of an Equation": {
+    "name": "The Concept of an Equation (what '=' means)",
+    "prerequisites": ["Understanding Expressions"]
+  },
+  "Understanding Expressions": {
+    "name": "Understanding Expressions (e.g., x + 5)",
+    "prerequisites": ["Understanding Variables"]
+  },
+  "Understanding Variables": {
+    "name": "Understanding Variables (what 'x' means)",
+    "prerequisites": []
+  }
+}
