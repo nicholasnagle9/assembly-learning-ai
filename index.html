@@ -142,6 +142,227 @@
             background: #0056b3;
         }
     </style>
+    <style>
+/* Modal Styles */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    animation: fadeIn 0.3s ease;
+}
+
+.modal-overlay.show {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.modal-content {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border-radius: 15px;
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(30px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.modal-header {
+    padding: 20px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h2 {
+    margin: 0;
+    color: #333;
+    font-size: 1.5em;
+}
+
+.close-button {
+    background: none;
+    border: none;
+    font-size: 28px;
+    cursor: pointer;
+    color: #666;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.close-button:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: #333;
+}
+
+.modal-body {
+    padding: 20px;
+    overflow-y: auto;
+    flex-grow: 1;
+}
+
+.subject-group {
+    margin-bottom: 25px;
+}
+
+.subject-title {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: #007bff;
+    margin-bottom: 10px;
+    padding-bottom: 5px;
+    border-bottom: 2px solid #007bff;
+}
+
+.category-group {
+    margin-bottom: 15px;
+    background-color: rgba(0, 123, 255, 0.05);
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.category-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    padding: 5px;
+    background-color: rgba(0, 123, 255, 0.1);
+    border-radius: 5px;
+}
+
+.category-header input[type="checkbox"] {
+    margin-right: 10px;
+}
+
+.category-title {
+    font-weight: 600;
+    color: #333;
+    flex-grow: 1;
+}
+
+.skill-item {
+    display: flex;
+    align-items: flex-start;
+    margin: 8px 0;
+    padding: 8px;
+    background-color: white;
+    border-radius: 5px;
+    transition: background-color 0.2s ease;
+}
+
+.skill-item:hover {
+    background-color: rgba(0, 123, 255, 0.05);
+}
+
+.skill-item input[type="checkbox"] {
+    margin-right: 10px;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.skill-info {
+    flex-grow: 1;
+}
+
+.skill-name {
+    font-weight: 500;
+    color: #333;
+    margin-bottom: 3px;
+}
+
+.skill-description {
+    font-size: 0.9em;
+    color: #666;
+    line-height: 1.4;
+}
+
+.modal-footer {
+    padding: 20px;
+    border-top: 1px solid rgba(0, 0, 0, 0.1);
+    display: flex;
+    justify-content: flex-end;
+}
+
+.submit-button {
+    background-color: #007bff;
+    color: white;
+    border: none;
+    padding: 12px 30px;
+    border-radius: 25px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.submit-button:hover {
+    background-color: #0056b3;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+}
+
+.submit-button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Checkbox styling */
+input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+/* Loading state */
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+}
+
+.loading::after {
+    content: "...";
+    animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+    0%, 20% { content: ""; }
+    40% { content: "."; }
+    60% { content: ".."; }
+    80%, 100% { content: "..."; }
+}
+</style>
 </head>
 <body>
 
@@ -203,7 +424,7 @@
                 const data = await response.json();
                 
                 chatMessages.removeChild(typingIndicator);
-                addMessageToChat(data.reply, 'ai-message', true); // Use Markdown for AI messages
+                processBackendResponse(data); // Use Markdown for AI messages
 
             } catch (error) {
                 chatMessages.removeChild(typingIndicator);
@@ -230,6 +451,259 @@
             return messageDiv;
         }
     </script>
+    <script>
+// Add this JavaScript to your existing script.js file
 
+// Assume this global variable exists
+const currentUserId = 'user123'; // This should come from your actual user system
+
+// Modal DOM references
+const prerequisiteModal = document.getElementById('prerequisite-modal');
+const modalTitle = document.getElementById('modal-title');
+const modalBody = document.getElementById('modal-body');
+const closeModalBtn = document.getElementById('close-modal');
+const submitBtn = document.getElementById('submit-prerequisites');
+
+// Function to display the prerequisite checklist
+async function displayPrerequisiteChecklist(goalSkillId) {
+    try {
+        // Show loading state
+        modalBody.innerHTML = '<div class="loading">Loading prerequisites</div>';
+        prerequisiteModal.classList.add('show');
+        
+        // Fetch prerequisites
+        const response = await fetch(`/skills/prerequisites_for_goal/${goalSkillId}`);
+        if (!response.ok) throw new Error('Failed to fetch prerequisites');
+        
+        const prerequisites = await response.json();
+        
+        // Get goal skill name for title
+        const goalResponse = await fetch(`/skills/${goalSkillId}`);
+        const goalSkill = await goalResponse.json();
+        modalTitle.textContent = `Set Your Progress for ${goalSkill.skill_name}`;
+        
+        // Group skills by subject and category
+        const groupedSkills = groupSkillsBySubjectAndCategory(prerequisites);
+        
+        // Render the grouped skills
+        renderGroupedSkills(groupedSkills);
+        
+    } catch (error) {
+        console.error('Error displaying prerequisites:', error);
+        modalBody.innerHTML = '<div style="color: red; text-align: center;">Error loading prerequisites. Please try again.</div>';
+    }
+}
+
+// Function to group skills by subject and category
+function groupSkillsBySubjectAndCategory(skills) {
+    const grouped = {};
+    
+    skills.forEach(skill => {
+        if (!grouped[skill.subject]) {
+            grouped[skill.subject] = {};
+        }
+        if (!grouped[skill.subject][skill.category]) {
+            grouped[skill.subject][skill.category] = [];
+        }
+        grouped[skill.subject][skill.category].push(skill);
+    });
+    
+    return grouped;
+}
+
+// Function to render grouped skills
+function renderGroupedSkills(groupedSkills) {
+    let html = '';
+    
+    for (const [subject, categories] of Object.entries(groupedSkills)) {
+        html += `<div class="subject-group">`;
+        html += `<div class="subject-title">${subject}</div>`;
+        
+        for (const [category, skills] of Object.entries(categories)) {
+            const categoryId = `category-${subject}-${category}`.replace(/\s+/g, '-');
+            
+            html += `<div class="category-group">`;
+            html += `<div class="category-header">`;
+            html += `<input type="checkbox" id="${categoryId}" class="select-all-checkbox" data-category="${categoryId}">`;
+            html += `<label for="${categoryId}" class="category-title">${category} (Select All)</label>`;
+            html += `</div>`;
+            
+            skills.forEach(skill => {
+                html += `<div class="skill-item">`;
+                html += `<input type="checkbox" id="skill-${skill.skill_id}" value="${skill.skill_id}" class="skill-checkbox" data-category="${categoryId}">`;
+                html += `<div class="skill-info">`;
+                html += `<label for="skill-${skill.skill_id}" class="skill-name">${skill.skill_name}</label>`;
+                if (skill.description) {
+                    html += `<div class="skill-description">${skill.description}</div>`;
+                }
+                html += `</div>`;
+                html += `</div>`;
+            });
+            
+            html += `</div>`;
+        }
+        
+        html += `</div>`;
+    }
+    
+    modalBody.innerHTML = html;
+    
+    // Add event listeners for select all checkboxes
+    document.querySelectorAll('.select-all-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', handleSelectAllChange);
+    });
+    
+    // Add event listeners for individual skill checkboxes
+    document.querySelectorAll('.skill-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', handleSkillCheckboxChange);
+    });
+}
+
+// Handle select all checkbox change
+function handleSelectAllChange(event) {
+    const categoryId = event.target.dataset.category;
+    const isChecked = event.target.checked;
+    
+    document.querySelectorAll(`.skill-checkbox[data-category="${categoryId}"]`).forEach(checkbox => {
+        checkbox.checked = isChecked;
+    });
+}
+
+// Handle individual skill checkbox change
+function handleSkillCheckboxChange(event) {
+    const categoryId = event.target.dataset.category;
+    const categoryCheckbox = document.querySelector(`.select-all-checkbox[data-category="${categoryId}"]`);
+    const skillCheckboxes = document.querySelectorAll(`.skill-checkbox[data-category="${categoryId}"]`);
+    
+    const allChecked = Array.from(skillCheckboxes).every(cb => cb.checked);
+    const someChecked = Array.from(skillCheckboxes).some(cb => cb.checked);
+    
+    categoryCheckbox.checked = allChecked;
+    categoryCheckbox.indeterminate = someChecked && !allChecked;
+}
+
+// Handle bulk mastery submission
+async function handleBulkMasterySubmit() {
+    try {
+        // Disable submit button
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+        
+        // Collect checked skill IDs
+        const checkedSkills = [];
+        document.querySelectorAll('.skill-checkbox:checked').forEach(checkbox => {
+            checkedSkills.push(parseInt(checkbox.value));
+        });
+        
+        if (checkedSkills.length === 0) {
+            alert('Please select at least one skill to mark as mastered.');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit Progress';
+            return;
+        }
+        
+        // Send bulk update request
+        const response = await fetch(`/users/${currentUserId}/master_skills_bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skill_ids: checkedSkills })
+        });
+        
+        if (!response.ok) throw new Error('Failed to update skills');
+        
+        const result = await response.json();
+        
+        // Hide modal
+        prerequisiteModal.classList.remove('show');
+        
+        // Send follow-up message to chat
+        await sendChatMessage('Progress updated! Ready to continue learning.');
+        
+    } catch (error) {
+        console.error('Error submitting skills:', error);
+        alert('Error updating skills. Please try again.');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit Progress';
+    }
+}
+
+// Helper function to send a chat message
+async function sendChatMessage(message) {
+    // Add message to chat UI
+    addMessageToChat(message, 'user-message');
+    
+    // Show typing indicator
+    const typingIndicator = addMessageToChat('AI is thinking...', 'ai-message typing');
+    
+    try {
+        const response = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: message,
+                user_id: currentUserId
+            })
+        });
+        
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const data = await response.json();
+        
+        chatMessages.removeChild(typingIndicator);
+        processBackendResponse(data);
+        
+    } catch (error) {
+        chatMessages.removeChild(typingIndicator);
+        addMessageToChat('Sorry, I ran into an error. Please try again.', 'ai-message');
+        console.error('Fetch Error:', error);
+    }
+}
+
+// Process backend response and check for prerequisite checklist action
+function processBackendResponse(data) {
+    // Add AI message to chat
+    addMessageToChat(data.reply, 'ai-message', true);
+    
+    // Check if we need to show prerequisite checklist
+    if (data.action === 'show_prerequisite_checklist' && data.goal_skill_id_for_checklist) {
+        displayPrerequisiteChecklist(data.goal_skill_id_for_checklist);
+    }
+}
+
+// Event listeners
+closeModalBtn.addEventListener('click', () => {
+    prerequisiteModal.classList.remove('show');
+});
+
+submitBtn.addEventListener('click', handleBulkMasterySubmit);
+
+// Close modal when clicking outside
+prerequisiteModal.addEventListener('click', (event) => {
+    if (event.target === prerequisiteModal) {
+        prerequisiteModal.classList.remove('show');
+    }
+});
+
+// Modify your existing chat form submission to use processBackendResponse
+// Look for where you handle the chat response and replace with:
+// Instead of: addMessageToChat(data.reply, 'ai-message', true);
+// Use: processBackendResponse(data);
+</script>
+<!-- Prerequisite Checklist Modal -->
+<div id="prerequisite-modal" class="modal-overlay">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="modal-title">Set Your Progress</h2>
+            <button class="close-button" id="close-modal">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body">
+            <!-- Skills will be dynamically loaded here -->
+        </div>
+        <div class="modal-footer">
+            <button id="submit-prerequisites" class="submit-button">Submit Progress</button>
+        </div>
+    </div>
+</div>
 </body>
 </html>

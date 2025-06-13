@@ -3,7 +3,7 @@ import json
 import mysql.connector
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -62,6 +62,29 @@ def get_all_prerequisites(cursor, skill_id, visited=None):
         prerequisites.update(get_all_prerequisites(cursor, prereq_id, visited))
     
     return prerequisites
+
+def get_all_prerequisites_recursive(cursor, skill_id, visited=None):
+    """Recursively get ALL prerequisites for a skill, including prerequisites of prerequisites"""
+    if visited is None:
+        visited = set()
+    
+    if skill_id in visited:
+        return set()
+    
+    visited.add(skill_id)
+    all_prerequisites = set()
+    
+    # Get direct prerequisites
+    query = "SELECT prerequisite_id FROM Prerequisites WHERE skill_id = %s"
+    cursor.execute(query, (skill_id,))
+    
+    for row in cursor.fetchall():
+        prereq_id = row['prerequisite_id']
+        all_prerequisites.add(prereq_id)
+        # Recursively get prerequisites of this prerequisite
+        all_prerequisites.update(get_all_prerequisites_recursive(cursor, prereq_id, visited))
+    
+    return all_prerequisites
 
 def find_next_skill(cursor, mastered_skills, goal_skill_id):
     """Find the next skill to learn on the path to the goal"""
@@ -158,9 +181,32 @@ def analyze_user_intent(user_message, cursor):
     
     return []
 
+def mark_skill_and_prerequisites_mastered(cursor, user_id, skill_id, already_processed=None):
+    """Recursively mark a skill and all its prerequisites as mastered"""
+    if already_processed is None:
+        already_processed = set()
+    
+    if skill_id in already_processed:
+        return
+    
+    already_processed.add(skill_id)
+    
+    # First, mark all prerequisites of this skill
+    prereqs = get_all_prerequisites_recursive(cursor, skill_id)
+    for prereq_id in prereqs:
+        if prereq_id not in already_processed:
+            mark_skill_and_prerequisites_mastered(cursor, user_id, prereq_id, already_processed)
+    
+    # Then mark this skill as mastered
+    cursor.execute(
+        "INSERT INTO User_Skills (user_id, skill_id) VALUES (%s, %s) ON DUPLICATE KEY UPDATE skill_id=skill_id",
+        (user_id, skill_id)
+    )
+
 # --- FastAPI App & Middleware ---
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# --- Pydantic Models ---
 class ChatRequest(BaseModel):
     message: str
     user_id: str
@@ -169,7 +215,127 @@ class SetGoalRequest(BaseModel):
     user_id: str
     goal_skill_id: int
 
-# --- New Endpoint for Setting Learning Goals ---
+class BulkMasterSkillsRequest(BaseModel):
+    skill_ids: List[int]
+
+class SkillResponse(BaseModel):
+    skill_id: int
+    skill_name: str
+    subject: str
+    category: str
+    description: Optional[str] = None
+
+# --- New Endpoint for Getting Prerequisites for a Goal ---
+@app.get("/skills/prerequisites_for_goal/{goal_skill_id}", response_model=List[SkillResponse])
+async def get_prerequisites_for_goal(goal_skill_id: int):
+    """Get all prerequisite skills needed for a goal skill"""
+    db_connection = get_db_connection()
+    if not db_connection:
+        return []
+    
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        
+        # Get all prerequisites recursively
+        all_prereqs = get_all_prerequisites_recursive(cursor, goal_skill_id)
+        
+        if not all_prereqs:
+            return []
+        
+        # Get skill details for all prerequisites
+        placeholders = ','.join(['%s'] * len(all_prereqs))
+        query = f"""
+            SELECT skill_id, skill_name, subject, category, description 
+            FROM Skills 
+            WHERE skill_id IN ({placeholders})
+            ORDER BY subject, category, skill_id
+        """
+        cursor.execute(query, tuple(all_prereqs))
+        
+        skills = cursor.fetchall()
+        return [SkillResponse(**skill) for skill in skills]
+        
+    finally:
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
+
+# --- New Endpoint for Getting Single Skill Details ---
+@app.get("/skills/{skill_id}", response_model=SkillResponse)
+async def get_skill(skill_id: int):
+    """Get details for a single skill"""
+    db_connection = get_db_connection()
+    if not db_connection:
+        raise HTTPException(status_code=500, detail="Database connection error")
+    
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT skill_id, skill_name, subject, category, description FROM Skills WHERE skill_id = %s",
+            (skill_id,)
+        )
+        skill = cursor.fetchone()
+        
+        if not skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        
+        return SkillResponse(**skill)
+        
+    finally:
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
+
+# --- New Endpoint for Bulk Skill Mastery ---
+@app.post("/users/{user_id}/master_skills_bulk")
+async def master_skills_bulk(user_id: str, request: BulkMasterSkillsRequest):
+    """Mark multiple skills as mastered for a user, including all their prerequisites"""
+    db_connection = get_db_connection()
+    if not db_connection:
+        return {"success": False, "message": "Database connection error"}
+    
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        
+        # Get numeric user ID
+        cursor.execute("SELECT user_id FROM Users WHERE username = %s", (user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return {"success": False, "message": "User not found"}
+        
+        numeric_user_id = user['user_id']
+        
+        # Process each skill and its prerequisites
+        processed_skills = set()
+        for skill_id in request.skill_ids:
+            mark_skill_and_prerequisites_mastered(cursor, numeric_user_id, skill_id, processed_skills)
+        
+        db_connection.commit()
+        
+        # Get updated count of mastered skills
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM User_Skills WHERE user_id = %s",
+            (numeric_user_id,)
+        )
+        mastered_count = cursor.fetchone()['count']
+        
+        return {
+            "success": True,
+            "message": f"Successfully updated {len(processed_skills)} skills",
+            "skills_processed": len(processed_skills),
+            "total_mastered": mastered_count
+        }
+        
+    except Exception as e:
+        db_connection.rollback()
+        return {"success": False, "message": f"Error updating skills: {str(e)}"}
+    finally:
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
+
+# --- Endpoint for Setting Learning Goals ---
 @app.post("/set_goal")
 async def set_goal(request: SetGoalRequest):
     username = request.user_id
@@ -203,7 +369,7 @@ async def set_goal(request: SetGoalRequest):
             cursor.close()
             db_connection.close()
 
-# --- New Endpoint for Getting Available Skills ---
+# --- Endpoint for Getting Available Skills ---
 @app.get("/available_skills/{user_id}")
 async def get_available_skills(user_id: str):
     db_connection = get_db_connection()
@@ -242,6 +408,9 @@ async def chat_handler(chat_request: ChatRequest):
     username = chat_request.user_id
     user_message = chat_request.message
     ai_response = "An unexpected error occurred."
+    action_response = None  # New variable for UI actions
+    goal_skill_id_for_checklist = None  # New variable for checklist
+    
     db_connection = get_db_connection()
     if not db_connection: return {"reply": "Error: Could not connect to the database."}
 
@@ -256,6 +425,12 @@ async def chat_handler(chat_request: ChatRequest):
             numeric_user_id = cursor.lastrowid
         else:
             numeric_user_id = user_record['user_id']
+
+        # Check if this is a progress update message after bulk mastery
+        if user_message.lower() in ["progress updated", "ready to learn!", "resume", "continue", "progress updated! ready to continue learning."]:
+            # Clear any existing session and re-evaluate
+            if username in user_session_state:
+                del user_session_state[username]
 
         # --- State Machine Logic ---
         if username not in user_session_state:
@@ -312,6 +487,44 @@ async def chat_handler(chat_request: ChatRequest):
                     else:
                         return {"reply": "### Congratulations!\n\nYou have mastered the entire mathematics curriculum!"}
             
+            # NEW: Check if we should show prerequisite checklist
+            # Get all prerequisites for the goal
+            all_prereqs_for_goal = get_all_prerequisites_recursive(cursor, goal_skill_id)
+            unmastered_prereqs = all_prereqs_for_goal - mastered_skills
+            
+            # If there are many unmastered prerequisites, show the checklist
+            if len(unmastered_prereqs) > 3:  # Threshold for showing checklist
+                cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (goal_skill_id,))
+                goal_skill = cursor.fetchone()
+                
+                # Prepare AI response about showing checklist
+                ai_response = f"### Great choice! Let's learn {goal_skill['skill_name']}!\n\n"
+                ai_response += f"I see you want to learn **{goal_skill['skill_name']}**. "
+                ai_response += f"This topic builds on several prerequisite skills. "
+                ai_response += f"I'll show you a checklist of these prerequisites so you can mark any you've already mastered. "
+                ai_response += f"This will help me create the most efficient learning path for you!\n\n"
+                ai_response += f"**Please check off any skills you already know in the pop-up that will appear.**"
+                
+                # Set action flags for frontend
+                action_response = "show_prerequisite_checklist"
+                goal_skill_id_for_checklist = goal_skill_id
+                
+                # Store the goal in session for later
+                user_session_state[username] = {
+                    "numeric_user_id": numeric_user_id,
+                    "goal_skill_id": goal_skill_id,
+                    "awaiting_checklist": True
+                }
+                
+                # Return with special action flag
+                response = {"reply": ai_response}
+                if action_response:
+                    response["action"] = action_response
+                if goal_skill_id_for_checklist:
+                    response["goal_skill_id_for_checklist"] = goal_skill_id_for_checklist
+                return response
+            
+            # Otherwise, proceed normally with finding next skill
             next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
             if next_skill_id:
                 cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
@@ -328,7 +541,32 @@ async def chat_handler(chat_request: ChatRequest):
             else:
                 return {"reply": "### Congratulations!\n\nYou have mastered all available skills in your learning path!"}
 
+        # Handle returning from checklist
         current_session = user_session_state[username]
+        if current_session.get("awaiting_checklist") and user_message.lower() in ["progress updated", "ready to learn!", "resume", "continue", "progress updated! ready to continue learning."]:
+            # Re-evaluate learning path after bulk update
+            del user_session_state[username]
+            
+            mastered_skills = get_mastered_skills(cursor, numeric_user_id)
+            goal_skill_id = current_session['goal_skill_id']
+            
+            next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
+            if next_skill_id:
+                cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
+                skill_record = cursor.fetchone()
+                user_session_state[username] = {
+                    "numeric_user_id": numeric_user_id,
+                    "current_skill_id": next_skill_id,
+                    "skill_name": skill_record['skill_name'],
+                    "subject": skill_record['subject'],
+                    "phase": "Crawl",
+                    "last_question": None,
+                    "goal_skill_id": goal_skill_id
+                }
+                current_session = user_session_state[username]
+            else:
+                return {"reply": "### Excellent progress!\n\nYou've already mastered all the prerequisites! Let's continue with your learning journey."}
+
         skill_name = current_session['skill_name']
         subject = current_session.get('subject', 'Mathematics')
         phase = current_session['phase']
@@ -416,11 +654,14 @@ async def chat_handler(chat_request: ChatRequest):
             cursor.close()
             db_connection.close()
 
-    return {"reply": ai_response}
-
-@app.get("/")
-def read_root():
-    return {"message": "AI Tutor API is running!"}
+    # Return response with optional action flags
+    response = {"reply": ai_response}
+    if action_response:
+        response["action"] = action_response
+    if goal_skill_id_for_checklist:
+        response["goal_skill_id_for_checklist"] = goal_skill_id_for_checklist
+    
+    return response
 
 @app.get("/user_progress/{user_id}")
 async def get_user_progress(user_id: str):
@@ -480,3 +721,7 @@ async def get_user_progress(user_id: str):
         if db_connection and db_connection.is_connected():
             cursor.close()
             db_connection.close()
+
+@app.get("/")
+def read_root():
+    return {"message": "AI Tutor API is running!"}
