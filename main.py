@@ -14,9 +14,11 @@ from typing import Optional, Set, List, Dict
 load_dotenv()
 app = FastAPI()
 
+# --- FIX: Specifically allow your local development origin ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # This list explicitly tells the server to accept requests from your local domain.
+    allow_origins=["http://ai-tutor.local"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -133,7 +135,6 @@ async def chat_handler(req: ChatRequest):
     cursor = db.cursor(dictionary=True)
     
     try:
-        # Step 1: Get User and Session State from DB
         user_record = get_or_create_user(cursor, req.access_code)
         db.commit()
         access_code = user_record['access_code']
@@ -145,26 +146,21 @@ async def chat_handler(req: ChatRequest):
         user_message = req.message
         ai_response = "I'm not sure how to respond."
 
-        # Handle special initial message from frontend on load
         if user_message == "##INITIALIZE##":
             if session.get("phase") == "Awaiting_Goal":
                 ai_response = "Hello! I'm your personal AI Tutor. What would you like to learn today?"
-            else: # User is resuming a session
+            else:
                 last_reply = session.get("last_ai_reply", "Welcome back! Let's continue where you left off.")
                 ai_response = f"[Resuming Session]\n\n{last_reply}"
             session['last_ai_reply'] = ai_response
             
-            # --- Commit session state to DB and return ---
             cursor.execute("UPDATE Users SET session_state = %s WHERE user_id = %s", (json.dumps(session), user_id))
             db.commit()
             return ChatResponse(reply=ai_response, access_code=access_code)
 
-        # Step 2: Main State Machine Loop
-        # This loop allows for internal transitions (e.g., auto-advancing after a correct answer)
-        # without needing a new message from the user.
         while True:
             phase = session.get("phase", "Awaiting_Goal")
-            continue_loop = False # Flag to see if we should run the loop again
+            continue_loop = False 
 
             if phase == "Awaiting_Goal":
                 all_skills = get_all_skills(cursor)
@@ -250,9 +246,9 @@ async def chat_handler(req: ChatRequest):
                 ai_response = evaluation.get('feedback')
                 if evaluation.get('is_correct'):
                     session['phase'] = 'Run_Ask'
-                    continue_loop = True # Immediately transition to the assessment question
+                    continue_loop = True
                 else:
-                    session['phase'] = 'Crawl' # If wrong, re-explain the concept
+                    session['phase'] = 'Crawl'
 
             elif phase == "Run_Ask":
                 skill_record = session['current_skill_record']
@@ -261,7 +257,7 @@ async def chat_handler(req: ChatRequest):
                     ai_response = question
                     session['last_question'] = question
                     session['phase'] = 'Run_Evaluate'
-                else: # No assessment, auto-master
+                else:
                     ai_response = "This topic doesn't have a final question, so we'll mark it as complete."
                     session['phase'] = 'Summary'
                     continue_loop = True
@@ -274,7 +270,7 @@ async def chat_handler(req: ChatRequest):
                     continue_loop = True
                 else:
                     ai_response += "\n\nLet's review this concept one more time before we move on."
-                    session['phase'] = 'Crawl' # Go back to the explanation
+                    session['phase'] = 'Crawl'
 
             elif phase == "Summary":
                 skill_record = session['current_skill_record']
@@ -295,19 +291,16 @@ async def chat_handler(req: ChatRequest):
                     ai_response += "\n\nCongratulations, you've completed your entire learning plan! What would you like to learn next?"
                     session = {"phase": "Awaiting_Goal"}
             
-            # If we don't need to loop internally, break to send the response
             if not continue_loop:
                 break
         
-        # --- Final Step: Commit session state to DB and return ---
-        session['last_ai_reply'] = ai_response # Save last reply for session resume
+        session['last_ai_reply'] = ai_response
         cursor.execute("UPDATE Users SET session_state = %s WHERE user_id = %s", (json.dumps(session), user_id))
         db.commit()
         return ChatResponse(reply=ai_response, access_code=access_code)
 
     except Exception as e:
         print(f"An error occurred in the chat handler: {e}")
-        # Optionally log the full traceback
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="An internal error occurred.")
