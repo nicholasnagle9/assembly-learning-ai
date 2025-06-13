@@ -15,8 +15,6 @@ import traceback
 load_dotenv()
 app = FastAPI()
 
-# --- FIX: More permissive CORS for debugging ---
-# This allows requests from your specific local domain AND a wildcard for testing.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://ai-tutor.local", "*"],
@@ -195,7 +193,9 @@ async def chat_handler(req: ChatRequest):
                     ai_response = "I'm having trouble understanding that goal. Could you be more specific?"
 
             elif phase == "Confirming_Goal":
-                if "yes" in user_message.lower():
+                # --- FIX: Expanded list of affirmative responses ---
+                affirmatives = ["yes", "yep", "sure", "ok", "correct", "right", "yup", "yeah", "absolutely"]
+                if any(word in user_message.lower().split() for word in affirmatives):
                     target_skill_id = session['target_skill_id']
                     mastered_skills = get_mastered_skills(cursor, user_id)
                     
