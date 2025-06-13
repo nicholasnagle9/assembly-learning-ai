@@ -87,34 +87,23 @@ def get_direct_prerequisites(cursor, skill_id: int) -> Set[int]:
     cursor.execute(query, (skill_id,))
     return {row['prerequisite_id'] for row in cursor.fetchall()}
 # --- NEW: Helper function for the assessment logic ---
+# --- REVISED: Helper function for the assessment logic (Simpler & More Robust) ---
 def get_next_assessment_question(cursor, skills_to_test: List[int]) -> Tuple[Optional[int], Optional[str]]:
-    """Finds the best question to ask from a list of skills to test."""
+    """Finds the best question to ask from a list of skills, starting with the highest skill ID."""
     if not skills_to_test:
         return None, None
 
-    skill_set = set(skills_to_test)
-    prereqs_in_set = set()
-    for skill_id in skill_set:
-        query = "SELECT prerequisite_id FROM Prerequisites WHERE skill_id = %s"
-        cursor.execute(query, (skill_id,))
-        for row in cursor.fetchall():
-            if row['prerequisite_id'] in skill_set:
-                prereqs_in_set.add(row['prerequisite_id'])
-
-    # "Gateway" skills are those not serving as prerequisites for other skills in the test set.
-    gateway_skills = sorted(list(skill_set - prereqs_in_set), reverse=True)
-    
-    # Prioritize asking questions for gateway skills
-    testable_skills = gateway_skills + sorted(list(prereqs_in_set), reverse=True)
-
-    for skill_id in testable_skills:
+    # The skills_to_test list is already sorted by skill_id descending.
+    # We simply iterate through it and find the first skill that has a question defined.
+    for skill_id in skills_to_test:
         cursor.execute("SELECT assessment_question FROM Skills WHERE skill_id = %s", (skill_id,))
         result = cursor.fetchone()
-        if result and result['assessment_question']:
+        # Check if a result was found and if the question field is not empty
+        if result and result.get('assessment_question'):
             return skill_id, result['assessment_question']
             
-    return None, None # No more questions to ask
-
+    # If no question is found in the entire list, return None
+    return None, None
 # (Pydantic Models and other endpoints like /skills/{skill_id} would go here, unchanged)
 class ChatRequest(BaseModel):
     message: str
@@ -122,6 +111,7 @@ class ChatRequest(BaseModel):
 
 # --- REWRITTEN: The New Brain ---
 # --- REWRITTEN: The New Brain (Version 2) ---
+# --- REWRITTEN: The New Brain (Version 3) ---
 @app.post("/chat")
 async def chat_handler(chat_request: ChatRequest):
     username = chat_request.user_id
@@ -144,74 +134,16 @@ async def chat_handler(chat_request: ChatRequest):
         current_session = user_session_state.get(username, {})
         phase = current_session.get("phase")
 
-        # --- ASSESSMENT LOGIC ---
-        if phase and phase.startswith('Assessment'):
-            if phase == 'Assessment_Evaluate':
-                skill_being_tested = current_session['skill_being_tested']
-                last_question = current_session['last_question']
-                
-                # --- FIX 1: Improved prompt that doesn't leak the answer ---
-                eval_prompt = f"A user was asked: '{last_question}'. They responded: '{user_message}'. Is this answer correct? The concept is about an early topic in calculus. Respond ONLY with a single, minified JSON object: {{\"is_correct\": boolean, \"feedback\": \"A short, encouraging, one-sentence piece of feedback. Do NOT reveal the correct answer or explain the solution.\"}}"
-                response = generative_model.generate_content(eval_prompt, request_options=request_options)
-                assessment = json.loads(response.text[response.text.find('{'):response.text.rfind('}')+1])
+        # --- FIX: More specific condition for starting a new assessment ---
+        is_starting_new_topic = (
+            not current_session or 
+            user_message in ["start over", "new topic"] or 
+            "i want to learn" in user_message
+        )
 
-                ai_response = assessment.get("feedback", "Got it.")
-                
-                if assessment.get("is_correct"):
-                    # --- CORRECT ANSWER ---
-                    ai_response += "\n\nCorrect! Let's try the next one."
-                    mark_skill_and_prerequisites_mastered(cursor, numeric_user_id, skill_being_tested)
-                    db_connection.commit()
-                    
-                    mastered_branch = get_all_prerequisites_recursive(cursor, skill_being_tested)
-                    mastered_branch.add(skill_being_tested)
-                    current_session['skills_to_test'] = [s for s in current_session['skills_to_test'] if s not in mastered_branch]
-                else:
-                    # --- INCORRECT ANSWER ---
-                    ai_response += "\n\nNo problem, that's what this is for! Let's back up a step."
-                    
-                    # --- FIX 2: Use the new helper to get ONLY direct prerequisites ---
-                    direct_prereqs = get_direct_prerequisites(cursor, skill_being_tested)
-                    mastered_now = get_mastered_skills(cursor, numeric_user_id)
-                    
-                    # Add the more foundational skills to the front of the test list
-                    new_skills_to_test = sorted(list(direct_prereqs - mastered_now), reverse=True)
-                    current_session['skills_to_test'] = new_skills_to_test + current_session['skills_to_test']
-
-                # --- Ask the next question or complete the assessment ---
-                next_skill_id, next_question = get_next_assessment_question(cursor, current_session['skills_to_test'])
-                if next_question:
-                    ai_response += f"\n\nHere's the next question: {next_question}"
-                    current_session['skill_being_tested'] = next_skill_id
-                    current_session['last_question'] = next_question
-                    user_session_state[username] = current_session
-                else: # Assessment is complete
-                    current_session['phase'] = 'Assessment_Complete'
-                    # Fall through to the next block to generate the final response
-            
-            if current_session.get('phase') == 'Assessment_Complete':
-                mastered_skills = get_mastered_skills(cursor, numeric_user_id)
-                goal_skill_id = current_session['goal_skill_id']
-                next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
-                
-                if next_skill_id:
-                    cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
-                    skill_record = cursor.fetchone()
-                    ai_response = f"Diagnostic complete! Your personalized learning path starts with **{skill_record['skill_name']}**. Ready to dive in?"
-                    user_session_state[username] = {
-                        "numeric_user_id": numeric_user_id, "current_skill_id": next_skill_id,
-                        "skill_name": skill_record['skill_name'], "subject": skill_record['subject'],
-                        "phase": "Crawl", "last_question": None, "goal_skill_id": goal_skill_id
-                    }
-                else: 
-                    ai_response = "Wow, it looks like you've already mastered all the prerequisites for this topic! Great job. What would you like to learn next?"
-                    if username in user_session_state: del user_session_state[username]
-                
-                return {"reply": ai_response}
-
-        # --- NEW CONVERSATION / GOAL SETTING ---
-        elif not current_session or user_message in ["start over", "new topic", "i want to learn calculus"]:
-            goal_skill_id = 157 # Defaulting to "Calculus" for this example
+        if is_starting_new_topic:
+            # For this example, we'll hardcode the goal to Calculus if "learn" is mentioned
+            goal_skill_id = 157 
             mastered_skills = get_mastered_skills(cursor, numeric_user_id)
             
             if goal_skill_id in mastered_skills:
@@ -227,8 +159,7 @@ async def chat_handler(chat_request: ChatRequest):
                     "numeric_user_id": numeric_user_id
                 }
         
-        # --- START THE ASSESSMENT ---
-        elif current_session.get("phase") == "Start_Assessment":
+        elif phase == "Start_Assessment":
              next_skill_id, next_question = get_next_assessment_question(cursor, current_session['skills_to_test'])
              if next_question:
                  ai_response = f"Great! First question: {next_question}"
@@ -237,14 +168,80 @@ async def chat_handler(chat_request: ChatRequest):
                  current_session['last_question'] = next_question
                  user_session_state[username] = current_session
              else: 
-                 ai_response = "You know, it looks like this path is pretty straightforward. Let's just jump right in!"
-                 # This would transition to Crawl-Walk-Run
-                 if username in user_session_state: del user_session_state[username]
+                 ai_response = "You know, after reviewing the prerequisites, it looks like a personalized path can be built without a diagnostic. Let's jump right in!"
+                 # This logic finds the next skill and transitions to the Crawl phase
+                 mastered_skills = get_mastered_skills(cursor, numeric_user_id)
+                 goal_skill_id = current_session['goal_skill_id']
+                 next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
+                 if next_skill_id:
+                    cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
+                    skill_record = cursor.fetchone()
+                    user_session_state[username] = {
+                        "numeric_user_id": numeric_user_id, "current_skill_id": next_skill_id,
+                        "skill_name": skill_record['skill_name'], "subject": skill_record['subject'],
+                        "phase": "Crawl", "last_question": None, "goal_skill_id": goal_skill_id
+                    }
+                    ai_response = f"Your learning path starts with **{skill_record['skill_name']}**. Ready to begin?"
+                 else:
+                    ai_response = "Looks like you know this all already! What's next?"
+                    if username in user_session_state: del user_session_state[username]
 
-        # --- REGULAR CRAWL-WALK-RUN LOGIC ---
-        else:
-            ai_response = f"Continuing with your lesson on **{current_session.get('skill_name')}**... (Crawl-Walk-Run logic)"
 
+        elif phase == 'Assessment_Evaluate':
+            skill_being_tested = current_session['skill_being_tested']
+            last_question = current_session['last_question']
+            
+            eval_prompt = f"A user was asked: '{last_question}'. They responded: '{user_message}'. Is this answer correct? The concept is about an early topic in calculus. Respond ONLY with a single, minified JSON object: {{\"is_correct\": boolean, \"feedback\": \"A short, encouraging, one-sentence piece of feedback. Do NOT reveal the correct answer or explain the solution.\"}}"
+            response = generative_model.generate_content(eval_prompt, request_options=request_options)
+            assessment = json.loads(response.text[response.text.find('{'):response.text.rfind('}')+1])
+            ai_response = assessment.get("feedback", "Got it.")
+            
+            if assessment.get("is_correct"):
+                ai_response += "\n\nCorrect! Let's try the next one."
+                mark_skill_and_prerequisites_mastered(cursor, numeric_user_id, skill_being_tested)
+                db_connection.commit()
+                mastered_branch = get_all_prerequisites_recursive(cursor, skill_being_tested)
+                mastered_branch.add(skill_being_tested)
+                current_session['skills_to_test'] = [s for s in current_session['skills_to_test'] if s not in mastered_branch]
+            else:
+                ai_response += "\n\nNo problem, that's what this is for! Let's back up a step."
+                direct_prereqs = get_direct_prerequisites(cursor, skill_being_tested)
+                mastered_now = get_mastered_skills(cursor, numeric_user_id)
+                new_skills_to_test = sorted(list(direct_prereqs - mastered_now), reverse=True)
+                current_session['skills_to_test'] = new_skills_to_test + [s for s in current_session['skills_to_test'] if s != skill_being_tested]
+
+            next_skill_id, next_question = get_next_assessment_question(cursor, current_session['skills_to_test'])
+            if next_question:
+                ai_response += f"\n\nHere's the next question: {next_question}"
+                current_session['skill_being_tested'] = next_skill_id
+                current_session['last_question'] = next_question
+                user_session_state[username] = current_session
+            else:
+                current_session['phase'] = 'Assessment_Complete'
+
+        if current_session.get('phase') == 'Assessment_Complete':
+            mastered_skills = get_mastered_skills(cursor, numeric_user_id)
+            goal_skill_id = current_session['goal_skill_id']
+            next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
+            if next_skill_id:
+                cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
+                skill_record = cursor.fetchone()
+                ai_response = f"Diagnostic complete! Your personalized learning path starts with **{skill_record['skill_name']}**. Ready to dive in?"
+                user_session_state[username] = {
+                    "numeric_user_id": numeric_user_id, "current_skill_id": next_skill_id,
+                    "skill_name": skill_record['skill_name'], "subject": skill_record['subject'],
+                    "phase": "Crawl", "last_question": None, "goal_skill_id": goal_skill_id
+                }
+            else:
+                ai_response = "Wow, it looks like you've already mastered all the prerequisites for this topic! Great job. What would you like to learn next?"
+                if username in user_session_state: del user_session_state[username]
+        
+        elif not phase: # Fallback for other messages
+            ai_response = "What would you like to do? You can start a new topic by saying 'I want to learn...'"
+
+        # CRAWL-WALK-RUN LOGIC WOULD GO HERE FOR PHASES LIKE 'Crawl', 'Walk_Ask', etc.
+        # This part is triggered after the assessment is complete and the first skill is identified.
+        
         return {"reply": ai_response}
 
     finally:
