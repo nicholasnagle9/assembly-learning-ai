@@ -3,16 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Assembly Learning AI</title>
-    
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
+    <title>Assembly Learning AI MVP</title>
+    <script src="[https://cdn.jsdelivr.net/npm/marked/marked.min.js](https://cdn.jsdelivr.net/npm/marked/marked.min.js)"></script>
     <style>
-        /* --- Basic Reset & Background --- */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --user-msg-bg: #007bff;
+            --ai-msg-bg: #f1f0f0;
+            --bg-grad-1: #84fab0;
+            --bg-grad-2: #8fd3f4;
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -20,31 +18,56 @@
             justify-content: center;
             align-items: center;
             min-height: 100vh;
-            background: linear-gradient(120deg, #84fab0, #8fd3f4, #a18cd1, #fbc2eb);
-            background-size: 400% 400%;
-            animation: gradientBG 15s ease infinite;
+            background: linear-gradient(120deg, var(--bg-grad-1), var(--bg-grad-2));
             padding: 10px;
+            margin: 0;
         }
-        @keyframes gradientBG {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        /* --- Main Glass Panel --- */
         .chat-container {
             width: 100%;
             max-width: 800px;
             height: 90vh;
-            background: rgba(255, 255, 255, 0.25);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(10px);
             border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.2);
             display: flex;
             flex-direction: column;
+            overflow: hidden;
         }
-        /* --- Chat Messages Area --- */
+        .persistence-header {
+            padding: 10px 20px;
+            background: rgba(0, 0, 0, 0.1);
+            font-size: 0.9em;
+            text-align: center;
+            color: #333;
+        }
+        #access-code-display {
+            font-weight: bold;
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #manual-code-area {
+            display: none; /* Initially hidden */
+            padding: 5px 20px 10px;
+            background: rgba(0, 0, 0, 0.05);
+            text-align: center;
+        }
+        #manual-code-area input {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #manual-code-area button {
+            padding: 5px 10px;
+            border: none;
+            background: var(--user-msg-bg);
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+        }
         #chat-messages {
             flex-grow: 1;
             padding: 20px;
@@ -61,132 +84,77 @@
             word-wrap: break-word;
         }
         .user-message {
-            background-color: #007bff;
+            background-color: var(--user-msg-bg);
             color: white;
             align-self: flex-end;
             border-bottom-right-radius: 4px;
         }
         .ai-message {
-            background-color: #f1f0f0;
+            background-color: var(--ai-msg-bg);
             color: #333;
             align-self: flex-start;
             border-bottom-left-radius: 4px;
         }
-        .ai-message.typing {
-            color: #888;
-            font-style: italic;
-        }
-        /* --- Markdown Formatting Styles --- */
-        .ai-message p { margin-bottom: 1em; }
         .ai-message p:last-child { margin-bottom: 0; }
-        .ai-message ul, .ai-message ol { margin-left: 20px; margin-bottom: 1em; }
-        .ai-message pre {
-            background-color: #e9ecef;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 1em 0;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-        .ai-message code {
-            font-family: 'Courier New', Courier, monospace;
-            background: #e9ecef;
-            padding: 0.2em 0.4em;
-            border-radius: 3px;
-            font-size: 0.95em;
-        }
-        .ai-message pre code { background: none; padding: 0; }
-        /* --- Input Form Area --- */
+        .ai-message pre { background-color: #e9ecef; padding: 15px; border-radius: 8px; margin: 1em 0; white-space: pre-wrap; }
         #chat-form {
             display: flex;
             padding: 15px;
             border-top: 1px solid rgba(255, 255, 255, 0.18);
-            align-items: flex-start; 
         }
         #user-input {
-            flex-grow: 1;
-            border: none;
-            padding: 12px 15px;
-            border-radius: 20px;
-            font-size: 16px;
-            background: rgba(255, 255, 255, 0.4);
-            outline: none;
-            margin-right: 10px;
-            resize: none; 
-            font-family: inherit;
-            line-height: 1.4;
-            max-height: 150px; 
+            flex-grow: 1; border: none; padding: 12px 15px; border-radius: 20px; font-size: 16px; background: rgba(255, 255, 255, 0.8);
+            outline: none; margin-right: 10px; resize: none; font-family: inherit;
         }
         #send-button {
-            border: none;
-            background: #007bff;
-            color: white;
-            font-weight: bold;
-            padding: 12px 20px;
-            border-radius: 20px;
-            cursor: pointer;
-            transition: background 0.3s ease;
-            height: 48px;
+            border: none; background: var(--user-msg-bg); color: white; font-weight: bold; padding: 12px 20px;
+            border-radius: 20px; cursor: pointer; transition: background 0.3s ease;
         }
-        #send-button:hover { background: #0056b3; }
     </style>
 </head>
 <body>
-
     <main class="chat-container">
-        <section id="chat-messages">
-            <div class="message ai-message">
-                <p>Hello! I'm your personal AI Tutor. What would you like to learn today? You can say something like "I want to learn calculus" to get started.</p>
-            </div>
-        </section>
+        <header class="persistence-header">
+            Your progress code: <span id="access-code-display" title="Click to enter a different code">loading...</span>
+        </header>
+        <div id="manual-code-area">
+            <input type="text" id="code-input" placeholder="Enter your code">
+            <button id="resume-button">Resume</button>
+        </div>
+        <section id="chat-messages"></section>
         <form id="chat-form">
-            <textarea id="user-input" placeholder="Type a message... (Shift + Enter for new line)" rows="1"></textarea>
+            <textarea id="user-input" placeholder="Type your message..." rows="1"></textarea>
             <button id="send-button" type="submit">Send</button>
         </form>
     </main>
 
     <script>
+        const API_URL = '[http://127.0.0.1:8000/chat](http://127.0.0.1:8000/chat)'; // IMPORTANT: Change if your backend is hosted elsewhere
+        const STORAGE_KEY = 'assemblyLearnerCode';
+
+        // --- DOM Elements ---
         const chatForm = document.getElementById('chat-form');
         const userInput = document.getElementById('user-input');
         const chatMessages = document.getElementById('chat-messages');
-        const currentUserId = 'user123';
+        const codeDisplay = document.getElementById('access-code-display');
+        const manualCodeArea = document.getElementById('manual-code-area');
+        const codeInput = document.getElementById('code-input');
+        const resumeButton = document.getElementById('resume-button');
 
-        // --- Auto-growing Textarea Logic ---
-        userInput.addEventListener('input', () => {
-            userInput.style.height = 'auto';
-            userInput.style.height = userInput.scrollHeight + 'px';
-        });
+        let accessCode = localStorage.getItem(STORAGE_KEY);
 
-        // --- "Smart Enter" Key Logic ---
-        userInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                chatForm.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-            }
-        });
-
-        // --- Form Submission Handler ---
-        chatForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const messageText = userInput.value.trim();
-            if (!messageText) return;
-
-            addMessageToChat(messageText, 'user-message');
-            userInput.value = '';
-            userInput.style.height = 'auto';
-
-            const typingIndicator = addMessageToChat('AI is thinking...', 'ai-message typing');
+        // --- Core Functions ---
+        async function sendMessage(message, code) {
+            addMessageToChat(message, 'user-message');
+            const typingIndicator = addMessageToChat('AI is thinking...', 'ai-message');
 
             try {
-                const response = await fetch('/chat', {
+                const response = await fetch(API_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: messageText,
-                        user_id: currentUserId
-                    }),
+                    body: JSON.stringify({ message: message, access_code: code }),
                 });
-                
+
                 chatMessages.removeChild(typingIndicator);
 
                 if (!response.ok) {
@@ -195,6 +163,14 @@
                 }
 
                 const data = await response.json();
+                
+                // This is the core persistence logic
+                if (data.access_code && data.access_code !== accessCode) {
+                    accessCode = data.access_code;
+                    localStorage.setItem(STORAGE_KEY, accessCode);
+                    updateCodeDisplay();
+                }
+
                 addMessageToChat(data.reply, 'ai-message', true);
 
             } catch (error) {
@@ -204,23 +180,61 @@
                 addMessageToChat(`Sorry, I ran into an error: ${error.message}`, 'ai-message');
                 console.error('Fetch Error:', error);
             }
-        });
+        }
 
-        // --- Helper function to add messages to the chat window ---
         function addMessageToChat(text, className, useMarkdown = false) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${className}`;
-
             if (useMarkdown && window.marked) {
                 messageDiv.innerHTML = marked.parse(text);
             } else {
                 messageDiv.textContent = text;
             }
-            
             chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
             return messageDiv;
         }
+
+        function updateCodeDisplay() {
+            if (accessCode) {
+                codeDisplay.textContent = accessCode;
+                manualCodeArea.style.display = 'none';
+            } else {
+                codeDisplay.textContent = 'None';
+            }
+        }
+
+        // --- Event Listeners ---
+        chatForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const messageText = userInput.value.trim();
+            if (!messageText) return;
+
+            userInput.value = '';
+            sendMessage(messageText, accessCode);
+        });
+
+        codeDisplay.addEventListener('click', () => {
+            manualCodeArea.style.display = manualCodeArea.style.display === 'block' ? 'none' : 'block';
+        });
+
+        resumeButton.addEventListener('click', () => {
+            const newCode = codeInput.value.trim();
+            if (newCode) {
+                accessCode = newCode;
+                localStorage.setItem(STORAGE_KEY, newCode);
+                updateCodeDisplay();
+                chatMessages.innerHTML = ''; // Clear chat
+                sendMessage("Hello, I'm resuming my session.", accessCode);
+            }
+        });
+
+        // --- Initial Load ---
+        window.addEventListener('load', () => {
+            updateCodeDisplay();
+            // Send an initial message to get a welcome and an access code if needed
+            sendMessage("Hello", accessCode);
+        });
     </script>
 </body>
 </html>
