@@ -66,18 +66,26 @@ def ask_ai(prompt):
     try: return generative_model.generate_content(full_prompt, request_options=request_options).text.strip()
     except Exception as e: print(f"AI Error: {e}"); return "Sorry, I had trouble thinking."
 
-def evaluate_answer_with_ai(question, user_answer):
-    prompt = f'A user was asked: "{question}". They responded: "{user_answer}". Is this correct? Respond ONLY with JSON: {{"is_correct": boolean, "feedback": "A short, one-sentence piece of feedback."}}'
+# --- NEW: "Acknowledge and Refine" Evaluation ---
+def collaborative_evaluation_with_ai(question, user_answer):
+    prompt = f"""You are a collaborative and encouraging tutor. A user was asked: '{question}'. They responded: '{user_answer}'.
+    Your task is to:
+    1. Start by explicitly acknowledging and praising what is CORRECT in their answer.
+    2. Then, gently identify ONE key area for improvement or refinement. If there are no mistakes, just give positive reinforcement.
+    3. Based on their overall grasp, determine if they are ready to proceed to the next step.
+    Respond ONLY with a JSON object: {{"can_proceed": boolean, "collaborative_feedback": "Your full, conversational response here."}}
+    """
     response_text = ask_ai(prompt)
     try:
         if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
         return json.loads(response_text)
-    except (json.JSONDecodeError, IndexError): return {"is_correct": False, "feedback": "I had trouble evaluating that."}
+    except (json.JSONDecodeError, IndexError):
+        return {"can_proceed": False, "collaborative_feedback": "I had some trouble evaluating that. Let's try approaching it a different way."}
 
 # --- Intent Classification Helpers ---
 def classify_main_intent(session, user_message):
     phase = session.get("phase", "Awaiting_Goal")
-    if phase.endswith("_Evaluate"): return "Answering_Question"
+    if phase.endswith("_Evaluate") or session.get("is_awaiting_feedback_response"): return "Answering_Question"
     context = f"The user is in the '{phase}' phase. Last AI message: '{session.get('last_ai_reply', '...')}'"
     prompt = f'Analyze the user message to determine their intent given the context.\nContext: {context}\nUser message: "{user_message}"\nCategorize intent as Answering_Question, Asking_Clarification, or Changing_Topic. Respond ONLY with the category name.'
     intent = ask_ai(prompt)
@@ -86,15 +94,14 @@ def classify_main_intent(session, user_message):
     return "Answering_Question"
 
 def is_exiting_clarification_loop(session, user_message):
-    context = f"The user asked a clarifying question and is in a sub-dialogue. The AI's last response was: '{session.get('last_clarification_reply', '...')}'"
-    prompt = f"The user is in a clarification loop. Does their new message: '{user_message}' indicate they understand and are ready to return to the main lesson? (e.g., 'ok that makes sense', 'got it', 'continue'). Respond ONLY with 'yes' or 'no'."
-    verdict = ask_ai(prompt).lower()
-    return "yes" in verdict
+    context = f"The user asked a clarifying question. The AI's last response was: '{session.get('last_clarification_reply', '...')}'"
+    prompt = f"Does their new message: '{user_message}' indicate they understand and are ready to return to the main lesson? (e.g., 'ok that makes sense', 'got it', 'continue'). Respond ONLY with 'yes' or 'no'."
+    return "yes" in ask_ai(prompt).lower()
 
 # --- Main Chat Endpoint ---
 @app.post("/chat", response_model=ChatResponse)
 async def chat_handler(req: ChatRequest):
-    db = get_db_connection()
+    db = get_db_connection();
     if not db: raise HTTPException(status_code=500, detail="Database connection failed.")
     cursor = db.cursor(dictionary=True)
     
@@ -110,21 +117,19 @@ async def chat_handler(req: ChatRequest):
         elif session.get("phase") == "Clarification_Mode":
             if is_exiting_clarification_loop(session, user_message):
                 return_point = session.get("return_point", {})
-                session = return_point # Restore the previous state
+                session = return_point
                 last_question = session.get("last_question", "Let's try that again.")
                 ai_response = f"Great, glad that's clearer!\n\n---\n**Now, back to our original question:**\n{last_question}"
-                # The state is now restored, ready for the user's answer
             else:
                 topic = session.get('return_point', {}).get('current_skill_record', {}).get('skill_name', 'the current topic')
-                prompt = f"The user is in a clarification loop about '{topic}'. Their previous question was answered. They have a follow-up question: '{user_message}'. Provide a helpful, concise answer."
+                prompt = f"The user is in a clarification loop about '{topic}'. They have a follow-up question: '{user_message}'. Provide a helpful, concise answer."
                 ai_response = ask_ai(prompt)
-                session['last_clarification_reply'] = ai_response # Update the last reply in this sub-dialogue
+                session['last_clarification_reply'] = ai_response
 
         else:
             intent = classify_main_intent(session, user_message)
             
             if intent == "Asking_Clarification":
-                # Save the current state so we can return to it
                 session['return_point'] = session.copy()
                 session['phase'] = "Clarification_Mode"
                 topic = session.get('return_point', {}).get('current_skill_record', {}).get('skill_name', 'the current topic')
@@ -145,20 +150,18 @@ async def chat_handler(req: ChatRequest):
                         prompt = f"""A user wants to learn about: "{user_message}". Determine the single most advanced, relevant skill ID they should start with.
                         Available skills: {json.dumps(all_skills, indent=2)}
                         Respond ONLY with the numeric skill ID."""
-                        target_id_str = ask_ai(prompt).strip()
                         try:
-                            target_id = int(target_id_str)
+                            target_id = int(ask_ai(prompt).strip())
                             cursor.execute("SELECT * FROM Skills WHERE skill_id = %s", (target_id,)); skill_record = cursor.fetchone()
                             if skill_record:
                                 session.update({"current_skill_record": skill_record, "phase": "Dive_In_Crawl"}); continue_loop = True
-                            else: ai_response = "I couldn't find that skill. Could you be more specific?"
+                            else: ai_response = "I couldn't find a skill for that. Could you be more specific?"
                         except (ValueError, TypeError): ai_response = "I'm having trouble pinpointing a topic for that."
 
                     elif phase == "Dive_In_Crawl":
                         skill_record = session['current_skill_record']
                         prompt = f"Explain '{skill_record['skill_name']}'. Use this as a guide, but create your own detailed explanation with analogies: '{skill_record['crawl_prompt']}'"
-                        explanation = ask_ai(prompt)
-                        ai_response = f"{explanation}\n\n---\n**Does this make sense, or should we cover the 'assembly' concepts first?**"
+                        ai_response = f"{ask_ai(prompt)}\n\n---\n**Does this make sense, or should we cover the 'assembly' concepts first?**"
                         session['phase'] = "Awaiting_Checkpoint_Response"
 
                     elif phase == "Awaiting_Checkpoint_Response":
@@ -174,15 +177,14 @@ async def chat_handler(req: ChatRequest):
                                 session['unmastered_prereqs'], session['phase'] = prereqs, 'Awaiting_Prerequisite_Choice'
                             else:
                                 ai_response, session['phase'], continue_loop = "It seems you know the prerequisites! Let's try a practice question to pinpoint the confusion.", 'Walk_Ask', True
-
+                    
                     elif phase == "Awaiting_Prerequisite_Choice":
-                        prereq_options = session.get('unmastered_prereqs', [])
-                        prompt = f"A user was given this list: {json.dumps(prereq_options)}. Their response was: '{user_message}'. Which topic are they choosing? Respond ONLY with the corresponding skill_id."
-                        try:
+                         try:
+                            prompt = f"A user was given this list: {json.dumps(session.get('unmastered_prereqs', []))}. Their response was: '{user_message}'. Which topic are they choosing? Respond ONLY with the corresponding skill_id."
                             target_id = int(ask_ai(prompt).strip())
                             cursor.execute("SELECT * FROM Skills WHERE skill_id = %s", (target_id,)); skill_record = cursor.fetchone()
                             session.update({"learning_plan": [target_id], "current_skill_index": 0, "current_skill_record": skill_record, "phase": "Crawl"}); continue_loop = True
-                        except (ValueError, TypeError): ai_response = "Sorry, I didn't catch that. Please choose a topic from the list."
+                         except (ValueError, TypeError): ai_response = "Sorry, I didn't catch that. Please choose a topic from the list."
 
                     elif phase == "Crawl":
                         plan, index = session.get('learning_plan', []), session.get('current_skill_index', 0)
@@ -199,12 +201,27 @@ async def chat_handler(req: ChatRequest):
                         ai_response, session['last_question'], session['phase'] = question, question, 'Walk_Evaluate'
 
                     elif phase == "Walk_Evaluate":
-                        evaluation = evaluate_answer_with_ai(session['last_question'], user_message)
-                        ai_response = evaluation.get('feedback')
-                        if evaluation.get('is_correct'): session['phase'], continue_loop = 'Run_Ask', True
+                        # --- NEW: "Trust but Verify" Logic ---
+                        if session.get("is_awaiting_feedback_response"):
+                            affirmatives = ["yes", "ok", "makes sense", "got it", "continue", "sure"]
+                            if any(word in user_message.lower() for word in affirmatives):
+                                ai_response = "Great! Let's try a slightly different question to be sure."
+                                prompt = f"Generate a new, slightly different guided practice question for '{session['current_skill_record']['skill_name']}', different from: '{session['last_question']}'"
+                                new_question = ask_ai(prompt)
+                                ai_response += f"\n\n{new_question}"
+                                session['last_question'] = new_question
+                                session.pop("is_awaiting_feedback_response", None)
+                                session['phase'] = 'Walk_Evaluate'
+                            else:
+                                ai_response, session['phase'] = "No problem, let's go over the main concept again.", 'Crawl'
                         else:
-                            prompt = f"A user struggled with a question about '{session['current_skill_record']['skill_name']}'. The question was: '{session['last_question']}'. Their wrong answer was: '{user_message}'. Generate a short, targeted 'micro-lesson' to explain the specific missing concept, then re-ask the original question."
-                            ai_response, session['phase'] = ask_ai(prompt), 'Walk_Evaluate' # Re-ask same question after micro-lesson
+                            evaluation = collaborative_evaluation_with_ai(session['last_question'], user_message)
+                            ai_response = evaluation.get('collaborative_feedback')
+                            if evaluation.get('can_proceed'):
+                                session['phase'], continue_loop = 'Run_Ask', True
+                            else:
+                                session['is_awaiting_feedback_response'] = True
+                                ai_response += "\n\nDoes that explanation help clarify things for you?"
 
                     elif phase == "Run_Ask":
                         prompt = f"Create a direct assessment question for '{session['current_skill_record']['skill_name']}'. Inspiration: '{session['current_skill_record']['run_prompt']}'"
@@ -212,9 +229,9 @@ async def chat_handler(req: ChatRequest):
                         ai_response, session['last_question'], session['phase'] = question, question, 'Run_Evaluate'
 
                     elif phase == "Run_Evaluate":
-                        evaluation = evaluate_answer_with_ai(session['last_question'], user_message)
-                        ai_response = evaluation.get('feedback', 'Got it.')
-                        if evaluation.get('is_correct'): session['phase'], continue_loop = 'Summary', True
+                        evaluation = collaborative_evaluation_with_ai(session['last_question'], user_message)
+                        ai_response = evaluation.get('collaborative_feedback', 'Got it.')
+                        if evaluation.get('can_proceed'): session['phase'], continue_loop = 'Summary', True
                         else: ai_response += "\n\nLet's review this concept one more time."; session['phase'] = 'Crawl'
 
                     elif phase == "Summary":
