@@ -115,22 +115,27 @@ def evaluate_answer_with_ai(question: str, user_answer: str) -> Dict:
     prompt = f"""A user was asked: "{question}". They responded: "{user_answer}". Is this response correct? Respond ONLY with a single, minified JSON object: {{"is_correct": boolean, "feedback": "A short, one-sentence piece of feedback."}}"""
     response_text = ask_ai(prompt)
     try:
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
         return json.loads(response_text)
     except (json.JSONDecodeError, IndexError):
         return {"is_correct": False, "feedback": "I had trouble evaluating that, let's try moving on."}
 
 def classify_intent_with_ai(session: Dict, user_message: str) -> str:
     phase = session.get("phase", "Awaiting_Goal")
-    if phase == "Confirming_Goal" or phase.endswith("_Evaluate"):
-        return "Answering_Question"
-
-    context = f"The user is in the '{phase}' phase of a lesson on '{session.get('current_skill_record', {}).get('skill_name', 'an unknown topic')}'. The last thing the AI said was: '{session.get('last_ai_reply', '...')}'"
-    prompt = f"""Analyze the user's message to determine their intent, given the conversation context.
+    # If we are in the middle of a question/answer flow, assume it's an answer.
+    if phase.endswith("_Evaluate"): return "Answering_Question"
+    
+    # --- FIX: Refined prompt for better intent classification ---
+    context = f"The user is in the '{phase}' phase. The last thing the AI said was: '{session.get('last_ai_reply', '...')}'"
+    prompt = f"""Analyze the user's message to determine their intent, given the context.
     Context: {context}
     User message: "{user_message}"
-    Categorize the user's primary intent (Answering_Question, Asking_Clarification, Changing_Topic). Respond ONLY with the category name."""
+
+    Categorize the user's primary intent. Respond ONLY with the category name:
+    - Answering_Question: The user is directly answering a question, confirming a prompt, or stating a learning goal in response to a question like "What do you want to learn?". Examples: "ok", "yes", "the answer is 5", "combining like terms", "algebra".
+    - Asking_Clarification: The user is asking a question about the current topic or expressing confusion. Examples: "Can you explain that more?", "Why?", "I don't get it".
+    - Changing_Topic: The user explicitly wants to stop or do something different NOT in response to a direct question. Examples: "Stop", "Let's do something else", "What else can I learn?".
+    """
     intent = ask_ai(prompt)
     valid_intents = ["Answering_Question", "Asking_Clarification", "Changing_Topic"]
     for valid in valid_intents:
@@ -156,142 +161,123 @@ async def chat_handler(req: ChatRequest):
 
         if user_message == "##INITIALIZE##":
             ai_response = "Hello! I'm your personal AI Tutor. What would you like to learn today?" if session.get("phase") == "Awaiting_Goal" else f"[Resuming Session]\n\n{session.get('last_ai_reply', 'Welcome back!')}"
-            session['last_ai_reply'] = ai_response
-            cursor.execute("UPDATE Users SET session_state = %s WHERE user_id = %s", (json.dumps(session), user_id))
-            db.commit()
-            return ChatResponse(reply=ai_response, access_code=access_code)
-
-        intent = classify_intent_with_ai(session, user_message)
-        
-        if intent == "Asking_Clarification":
-            topic = session.get('current_skill_record', {}).get('skill_name', 'the current topic')
-            prompt = f"The user is learning about '{topic}' and asked for clarification: '{user_message}'. Provide a helpful, concise explanation with real-world examples."
-            ai_response = ask_ai(prompt)
-        
-        elif intent == "Changing_Topic":
-            mastered_skills = get_mastered_skills(cursor, user_id)
-            cursor.execute(f"SELECT DISTINCT s.skill_id, s.skill_name FROM Skills s JOIN Prerequisites p ON s.skill_id = p.skill_id WHERE p.prerequisite_id IN ({','.join(map(str, mastered_skills)) or 'NULL'})")
-            next_logical_skills = [s for s in cursor.fetchall() if s['skill_id'] not in mastered_skills]
+        else:
+            intent = classify_intent_with_ai(session, user_message)
             
-            if next_logical_skills:
-                skill_list_str = "\n".join([f"- {s['skill_name']}" for s in next_logical_skills[:5]]) # Limit to 5 suggestions
-                ai_response = f"Based on what you've learned, here are some good next steps:\n\n{skill_list_str}\n\nOr you can tell me something else you're interested in!"
-            else:
-                ai_response = "Of course. What topic would you like to learn about?"
-            session = {"phase": "Awaiting_Goal"}
+            if intent == "Asking_Clarification":
+                topic = session.get('current_skill_record', {}).get('skill_name', 'the current topic')
+                prompt = f"The user is learning about '{topic}' and asked for clarification: '{user_message}'. Provide a helpful, concise explanation with real-world examples."
+                ai_response = ask_ai(prompt)
+            
+            elif intent == "Changing_Topic":
+                mastered_skills = get_mastered_skills(cursor, user_id)
+                cursor.execute(f"SELECT DISTINCT s.skill_id, s.skill_name FROM Skills s JOIN Prerequisites p ON s.skill_id = p.skill_id WHERE p.prerequisite_id IN ({','.join(map(str, mastered_skills)) or 'NULL'})")
+                next_logical_skills = [s for s in cursor.fetchall() if s['skill_id'] not in mastered_skills]
+                
+                if next_logical_skills:
+                    skill_list_str = "\n".join([f"- {s['skill_name']}" for s in next_logical_skills[:5]])
+                    ai_response = f"Based on what you've learned, here are some good next steps:\n\n{skill_list_str}\n\nOr you can tell me something else you're interested in!"
+                else:
+                    ai_response = "Of course. What topic would you like to learn about?"
+                session = {"phase": "Awaiting_Goal"}
 
-        elif intent == "Answering_Question":
-            continue_loop = True
-            while continue_loop:
-                phase = session.get("phase", "Awaiting_Goal")
-                continue_loop = False 
+            elif intent == "Answering_Question":
+                continue_loop = True
+                while continue_loop:
+                    phase = session.get("phase", "Awaiting_Goal")
+                    continue_loop = False 
 
-                if phase == "Awaiting_Goal":
-                    all_skills_by_subject = get_all_skills_by_subject(cursor)
-                    mastered_skills = get_mastered_skills(cursor, user_id)
-                    prompt = f"""You are a curriculum expert. A user wants to learn about: "{user_message}".
-                    Your task is to select the single best starting skill for them.
-                    
-                    Here are the available skills, grouped by subject:
-                    {json.dumps(all_skills_by_subject, indent=2)}
-
-                    The user has already mastered these skill IDs: {list(mastered_skills)}
-
-                    Based on all this, determine the most logical, unmastered skill ID for the user to start with.
-                    If the user mentions a broad subject, pick the first unmastered skill in that subject.
-                    Respond ONLY with the numeric skill ID.
-                    """
-                    target_id_str = ask_ai(prompt).strip()
-                    try:
-                        target_id = int(target_id_str)
-                        # --- FIX: Check for mastery BEFORE confirming ---
-                        if target_id in mastered_skills:
-                            ai_response = "It looks like you've already mastered that topic! What else would you like to explore?"
-                            session = {"phase": "Awaiting_Goal"}
-                        else:
-                            cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (target_id,))
-                            skill_record = cursor.fetchone()
-                            if skill_record:
-                                session.update({"target_skill_id": target_id, "target_skill_name": skill_record['skill_name'], "phase": "Confirming_Goal"})
-                                ai_response = f"Got it. A great place to start would be **{skill_record['skill_name']}**. Sound good?"
-                            else: ai_response = "I couldn't find a skill for that. Could you rephrase?"
-                    except (ValueError, TypeError): ai_response = "I'm having trouble pinpointing a topic for that. Can you be more specific?"
-
-                elif phase == "Confirming_Goal":
-                    affirmatives = ["yes", "yep", "sure", "ok", "correct", "right", "yup", "yeah", "good"]
-                    if any(word in user_message.lower() for word in affirmatives):
-                        target_skill_id = session['target_skill_id']
+                    # --- FIX: Streamlined Goal -> Lesson Flow ---
+                    if phase == "Awaiting_Goal":
+                        # This block now handles identifying the goal, building the path, and delivering the first lesson in one go.
+                        all_skills_by_subject = get_all_skills_by_subject(cursor)
                         mastered_skills = get_mastered_skills(cursor, user_id)
-                        prereqs = get_all_prerequisites_recursive(cursor, target_skill_id)
-                        full_path_ids = sorted(list(prereqs - mastered_skills)) + [target_skill_id]
-                        cursor.execute(f"SELECT skill_id, skill_name FROM Skills WHERE skill_id IN ({','.join(map(str, full_path_ids)) or 'NULL'})")
-                        path_skills = {s['skill_id']: s['skill_name'] for s in cursor.fetchall()}
-                        learning_path = [path_skills.get(sid) for sid in full_path_ids if path_skills.get(sid)]
-                        path_str = "\n".join([f"{i+1}. {name}" for i, name in enumerate(learning_path)])
-                        ai_response = f"Great! Here is the learning path I've built for you:\n\n{path_str}\n\nPress enter or say 'ok' to start with **{learning_path[0]}**."
-                        session.update({"learning_plan": full_path_ids, "current_skill_index": 0, "phase": "Crawl"})
-                    else:
-                        ai_response = "No problem. What would you like to learn instead?"
-                        session['phase'] = 'Awaiting_Goal'
+                        prompt = f"""You are a curriculum expert. A user wants to learn about: "{user_message}".
+                        Your task is to select the single best starting skill for them.
+                        Here are the available skills: {json.dumps(all_skills_by_subject, indent=2)}
+                        The user has already mastered these skill IDs: {list(mastered_skills)}
+                        Based on all this, determine the most logical, unmastered skill ID for the user to start with.
+                        Respond ONLY with the numeric skill ID."""
+                        target_id_str = ask_ai(prompt).strip()
+                        try:
+                            target_id = int(target_id_str)
+                            if target_id in mastered_skills:
+                                ai_response = "It looks like you've already mastered that topic! What else would you like to explore?"
+                                session = {"phase": "Awaiting_Goal"}
+                            else:
+                                prereqs = get_all_prerequisites_recursive(cursor, target_id)
+                                full_path_ids = sorted(list(prereqs - mastered_skills)) + [target_id]
+                                
+                                cursor.execute(f"SELECT skill_id, skill_name, crawl_prompt FROM Skills WHERE skill_id IN ({','.join(map(str, full_path_ids)) or 'NULL'})")
+                                path_skills = {s['skill_id']: s for s in cursor.fetchall()}
+                                learning_path_names = [path_skills.get(sid, {}).get('name') for sid in full_path_ids if path_skills.get(sid)]
+                                path_str = "\n".join([f"{i+1}. {name}" for i, name in enumerate(learning_path_names)])
+                                
+                                first_skill_record = path_skills.get(full_path_ids[0])
+                                crawl_content = first_skill_record.get('crawl_prompt', "Let's begin.")
 
-                elif phase == "Crawl":
-                    plan, index = session.get('learning_plan', []), session.get('current_skill_index', 0)
-                    if index < len(plan):
-                        cursor.execute("SELECT * FROM Skills WHERE skill_id = %s", (plan[index],))
-                        skill_record = cursor.fetchone()
-                        session['current_skill_record'] = skill_record
+                                ai_response = f"Great! To learn about that, we'll build a small learning path for you:\n\n{path_str}\n\nLet's start with **{learning_path_names[0]}**.\n\n---\n\n{crawl_content}"
+                                
+                                session.update({
+                                    "learning_plan": full_path_ids,
+                                    "current_skill_index": 0,
+                                    "current_skill_record": first_skill_record,
+                                    "phase": "Walk_Ask" # Directly move to the first question phase
+                                })
+                        except (ValueError, TypeError): 
+                            ai_response = "I'm having trouble pinpointing a topic for that. Can you be more specific?"
+
+                    elif phase == "Crawl": # This phase is now only for re-explanation
+                        skill_record = session['current_skill_record']
                         ai_response = skill_record.get('crawl_prompt', 'Let''s begin.')
                         session['phase'] = 'Walk_Ask'
-                    else:
-                        ai_response = "You've finished your plan! What's next?"
-                        session = {"phase": "Awaiting_Goal"}
-                
-                elif phase == "Walk_Ask":
-                    question = session.get('current_skill_record', {}).get('walk_prompt')
-                    if question:
-                        ai_response, session['last_question'], session['phase'] = question, question, 'Walk_Evaluate'
-                    else: session['phase'], continue_loop = 'Run_Ask', True
-                
-                elif phase == "Walk_Evaluate":
-                    evaluation = evaluate_answer_with_ai(session['last_question'], user_message)
-                    ai_response = evaluation.get('feedback')
-                    if evaluation.get('is_correct'):
-                        session['phase'], continue_loop = 'Run_Ask', True
-                    else:
-                        ai_response += "\n\nLet's try breaking that down again."
-                        session['phase'] = 'Crawl'
+                    
+                    elif phase == "Walk_Ask":
+                        question = session.get('current_skill_record', {}).get('walk_prompt')
+                        if question:
+                            ai_response, session['last_question'], session['phase'] = question, question, 'Walk_Evaluate'
+                        else: session['phase'], continue_loop = 'Run_Ask', True
+                    
+                    elif phase == "Walk_Evaluate":
+                        evaluation = evaluate_answer_with_ai(session['last_question'], user_message)
+                        ai_response = evaluation.get('feedback')
+                        if evaluation.get('is_correct'):
+                            session['phase'], continue_loop = 'Run_Ask', True
+                        else:
+                            ai_response += "\n\nLet's try breaking that down again."
+                            session['phase'] = 'Crawl'
 
-                elif phase == "Run_Ask":
-                    question = session.get('current_skill_record', {}).get('run_prompt')
-                    if question:
-                        ai_response, session['last_question'], session['phase'] = question, question, 'Run_Evaluate'
-                    else:
-                        ai_response, session['phase'], continue_loop = "No final question, we'll mark it as complete!", 'Summary', True
-                
-                elif phase == "Run_Evaluate":
-                    evaluation = evaluate_answer_with_ai(session['last_question'], user_message)
-                    ai_response = evaluation.get('feedback', 'Got it.')
-                    if evaluation.get('is_correct'):
-                        session['phase'], continue_loop = 'Summary', True
-                    else:
-                        ai_response += "\n\nLet's review this concept one more time."
-                        session['phase'] = 'Crawl'
+                    elif phase == "Run_Ask":
+                        question = session.get('current_skill_record', {}).get('run_prompt')
+                        if question:
+                            ai_response, session['last_question'], session['phase'] = question, question, 'Run_Evaluate'
+                        else:
+                            ai_response, session['phase'], continue_loop = "No final question, we'll mark it as complete!", 'Summary', True
+                    
+                    elif phase == "Run_Evaluate":
+                        evaluation = evaluate_answer_with_ai(session['last_question'], user_message)
+                        ai_response = evaluation.get('feedback', 'Got it.')
+                        if evaluation.get('is_correct'):
+                            session['phase'], continue_loop = 'Summary', True
+                        else:
+                            ai_response += "\n\nLet's review this concept one more time."
+                            session['phase'] = 'Crawl'
 
-                elif phase == "Summary":
-                    skill_record = session['current_skill_record']
-                    mark_skill_as_mastered(cursor, user_id, skill_record['skill_id'])
-                    ai_response = f"Excellent! You've mastered **{skill_record['skill_name']}**."
-                    session['current_skill_index'] += 1
-                    plan, index = session.get('learning_plan', []), session.get('current_skill_index', 0)
-                    if index < len(plan):
-                        cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (plan[index],))
-                        next_skill_record = cursor.fetchone()
-                        ai_response += f"\n\nNext up: **{next_skill_record['skill_name']}**. Ready?"
-                        session['phase'] = 'Crawl'
-                    else:
-                        ai_response += "\n\nCongratulations, you've completed your entire learning plan! What would you like to learn next?"
-                        session = {"phase": "Awaiting_Goal"}
+                    elif phase == "Summary":
+                        skill_record = session['current_skill_record']
+                        mark_skill_as_mastered(cursor, user_id, skill_record['skill_id'])
+                        ai_response = f"Excellent! You've mastered **{skill_record['skill_name']}**."
+                        session['current_skill_index'] += 1
+                        plan, index = session.get('learning_plan', []), session.get('current_skill_index', 0)
+                        if index < len(plan):
+                            # Transition to the next skill by jumping to the Crawl phase in the next loop
+                            session['phase'] = 'Crawl'
+                            continue_loop = True 
+                        else:
+                            ai_response += "\n\nCongratulations, you've completed your entire learning plan! What would you like to learn next?"
+                            session = {"phase": "Awaiting_Goal"}
         
+        # --- Final Step: Commit session state and return ---
         session['last_ai_reply'] = ai_response
         cursor.execute("UPDATE Users SET session_state = %s WHERE user_id = %s", (json.dumps(session), user_id))
         db.commit()
