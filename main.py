@@ -9,15 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional, Set, List, Dict
+import traceback
 
 # --- Configuration & Initialization ---
 load_dotenv()
 app = FastAPI()
 
-# --- FIX: Specifically allow your local development origin ---
+# --- CORS Middleware Configuration ---
+# This explicitly tells the server to accept requests from your local domain.
 app.add_middleware(
     CORSMiddleware,
-    # This list explicitly tells the server to accept requests from your local domain.
     allow_origins=["http://ai-tutor.local"],
     allow_credentials=True,
     allow_methods=["*"],
@@ -61,12 +62,16 @@ def generate_access_code() -> str:
     return f"{random.choice(adjectives)}-{random.choice(nouns)}-{secrets.randbelow(100)}"
 
 def get_or_create_user(cursor, access_code: Optional[str]) -> Dict:
+    # ADDED LOGGING: Let's see what access code we receive
+    print(f"Attempting to find user with access_code: {access_code}")
     if access_code:
         cursor.execute("SELECT * FROM Users WHERE access_code = %s", (access_code,))
         user_record = cursor.fetchone()
         if user_record:
+            print(f"Found user_id: {user_record['user_id']}")
             return user_record
 
+    print("No user found or no code provided. Creating new user.")
     while True:
         new_code = generate_access_code()
         cursor.execute("SELECT user_id FROM Users WHERE access_code = %s", (new_code,))
@@ -74,7 +79,9 @@ def get_or_create_user(cursor, access_code: Optional[str]) -> Dict:
             cursor.execute("INSERT INTO Users (access_code) VALUES (%s)", (new_code,))
             user_id = cursor.lastrowid
             cursor.execute("SELECT * FROM Users WHERE user_id = %s", (user_id,))
-            return cursor.fetchone()
+            new_user_record = cursor.fetchone()
+            print(f"Created new user_id: {new_user_record['user_id']} with code: {new_user_record['access_code']}")
+            return new_user_record
 
 # --- Knowledge Graph Helpers ---
 def get_all_skills(cursor) -> List[Dict]:
@@ -145,6 +152,12 @@ async def chat_handler(req: ChatRequest):
         
         user_message = req.message
         ai_response = "I'm not sure how to respond."
+
+        # ADDED LOGGING: Print current state at the beginning of a request
+        print(f"\n--- NEW REQUEST ---")
+        print(f"Access Code: {access_code}, User ID: {user_id}")
+        print(f"Incoming Message: '{user_message}'")
+        print(f"Session BEFORE processing: {session}")
 
         if user_message == "##INITIALIZE##":
             if session.get("phase") == "Awaiting_Goal":
@@ -297,13 +310,17 @@ async def chat_handler(req: ChatRequest):
         session['last_ai_reply'] = ai_response
         cursor.execute("UPDATE Users SET session_state = %s WHERE user_id = %s", (json.dumps(session), user_id))
         db.commit()
+        # ADDED LOGGING: Print the final state and response being sent
+        print(f"Session AFTER processing: {session}")
+        print(f"Final AI Response: '{ai_response[:100]}...'") # Log first 100 chars
+        print(f"--- END REQUEST ---\n")
         return ChatResponse(reply=ai_response, access_code=access_code)
 
     except Exception as e:
-        print(f"An error occurred in the chat handler: {e}")
-        import traceback
+        print(f"--- ERROR IN HANDLER ---")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="An internal error occurred.")
+        print(f"--- END ERROR ---")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
     finally:
         if db and db.is_connected():
             cursor.close()
