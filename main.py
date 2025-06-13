@@ -1,5 +1,5 @@
 import os
-import json
+import json 
 import mysql.connector
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from typing import Optional, Set, List, Dict
 
 # --- Configuration & Initialization ---
 load_dotenv()
@@ -14,14 +15,14 @@ app = FastAPI()
 
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    request_options = {"timeout": 300}
+    request_options = {"timeout": 300} 
     generative_model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
     print(f"Error configuring Google AI: {e}")
     generative_model = None
 
 # --- In-Memory State Management ---
-# Format: { "username": {"numeric_user_id": 1, "current_skill_id": 1, "skill_name": "...", "phase": "Crawl", "last_question": "...", "goal_topic_name": "...", "goal_skill_id": null} }
+# Format: { "username": {"numeric_user_id": 1, "current_skill_id": 1, "skill_name": "...", "phase": "Crawl", "last_question": "...", "goal_skill_id": 7} }
 user_session_state = {}
 
 # --- Database & Helper Functions ---
@@ -41,64 +42,121 @@ def get_mastered_skills(cursor, numeric_user_id):
     cursor.execute(query, (numeric_user_id,))
     return set(map(lambda row: row['skill_id'], cursor.fetchall()))
 
+def get_all_prerequisites(cursor, skill_id, visited=None):
+    """Recursively get all prerequisites for a skill"""
+    if visited is None:
+        visited = set()
+    
+    if skill_id in visited:
+        return set()
+    
+    visited.add(skill_id)
+    prerequisites = set()
+    
+    query = "SELECT prerequisite_id FROM Prerequisites WHERE skill_id = %s"
+    cursor.execute(query, (skill_id,))
+    
+    for row in cursor.fetchall():
+        prereq_id = row['prerequisite_id']
+        prerequisites.add(prereq_id)
+        prerequisites.update(get_all_prerequisites(cursor, prereq_id, visited))
+    
+    return prerequisites
+
 def find_next_skill(cursor, mastered_skills, goal_skill_id):
-    # If the goal skill itself is mastered, there's nothing left to learn in this path.
+    """Find the next skill to learn on the path to the goal"""
     if goal_skill_id in mastered_skills:
         return None
-
-    # Get prerequisites for the current goal_skill_id
-    query = "SELECT prerequisite_id FROM Prerequisites WHERE skill_id = %s"
-    cursor.execute(query, (goal_skill_id,))
-    prerequisites = cursor.fetchall()
-
-    # If there are no prerequisites, and the skill isn't mastered, it's the next to learn.
-    if not prerequisites:
+    
+    # Get all prerequisites for the goal
+    all_prereqs = get_all_prerequisites(cursor, goal_skill_id)
+    
+    # Find unmastered prerequisites
+    unmastered_prereqs = all_prereqs - mastered_skills
+    
+    if not unmastered_prereqs:
         return goal_skill_id
-
-    # Recursively check prerequisites
-    for prereq_row in prerequisites:
-        prereq_id = prereq_row['prerequisite_id']
-        if prereq_id not in mastered_skills:
-            # If a prerequisite is not mastered, find the first unmastered skill in *its* chain
-            skill_to_learn = find_next_skill(cursor, mastered_skills, prereq_id)
-            if skill_to_learn is not None:
-                return skill_to_learn
     
-    # If all prerequisites are mastered but the goal itself is not, then the goal is the next to learn
-    return goal_skill_id if goal_skill_id not in mastered_skills else None
-
-
-def search_for_skill_id(cursor, query_text):
-    """
-    Searches the Skills table for a skill matching the query_text.
-    Prioritizes exact matches, then starts-with, then contains.
-    Returns skill_id if found, None otherwise.
-    """
-    # Try exact match first
-    cursor.execute("SELECT skill_id, skill_name, subject, category FROM Skills WHERE skill_name = %s", (query_text,))
-    result = cursor.fetchone()
-    if result:
-        return result
-
-    # Then try case-insensitive exact match
-    cursor.execute("SELECT skill_id, skill_name, subject, category FROM Skills WHERE LOWER(skill_name) = LOWER(%s)", (query_text,))
-    result = cursor.fetchone()
-    if result:
-        return result
-
-    # Then try partial match (starts with)
-    cursor.execute("SELECT skill_id, skill_name, subject, category FROM Skills WHERE skill_name LIKE %s LIMIT 1", (f"{query_text}%",))
-    result = cursor.fetchone()
-    if result:
-        return result
-
-    # Finally, try partial match (contains)
-    cursor.execute("SELECT skill_id, skill_name, subject, category FROM Skills WHERE skill_name LIKE %s LIMIT 1", (f"%{query_text}%",))
-    result = cursor.fetchone()
-    if result:
-        return result
+    # Find the most foundational unmastered prerequisite
+    # (one that has all its prerequisites mastered)
+    for prereq_id in unmastered_prereqs:
+        prereq_prereqs = get_all_prerequisites(cursor, prereq_id)
+        if prereq_prereqs.issubset(mastered_skills):
+            return prereq_id
     
-    return None
+    # Fallback: return any unmastered prerequisite
+    return min(unmastered_prereqs)
+
+def get_skill_suggestions(cursor, mastered_skills, user_interests=None):
+    """Suggest next skills based on mastered skills and user interests"""
+    suggestions = []
+    
+    # Get all skills
+    cursor.execute("SELECT skill_id, skill_name, subject, category FROM Skills")
+    all_skills = cursor.fetchall()
+    
+    # Find skills where all prerequisites are mastered
+    for skill in all_skills:
+        if skill['skill_id'] not in mastered_skills:
+            prereqs = get_all_prerequisites(cursor, skill['skill_id'])
+            if prereqs.issubset(mastered_skills):
+                suggestions.append({
+                    'skill_id': skill['skill_id'],
+                    'skill_name': skill['skill_name'],
+                    'subject': skill['subject'],
+                    'category': skill['category']
+                })
+    
+    # Sort by subject and skill_id for consistent ordering
+    suggestions.sort(key=lambda x: (x['subject'], x['skill_id']))
+    
+    # Limit to top 10 suggestions
+    return suggestions[:10]
+
+def analyze_user_intent(user_message, cursor):
+    """Analyze user message to determine their learning intent"""
+    message_lower = user_message.lower()
+    
+    # Check for specific subject mentions
+    subjects = {
+        'algebra': ['algebra', 'equation', 'variable', 'polynomial', 'quadratic'],
+        'geometry': ['geometry', 'angle', 'triangle', 'circle', 'area', 'volume'],
+        'calculus': ['calculus', 'derivative', 'integral', 'limit', 'differentiation'],
+        'statistics': ['statistics', 'probability', 'distribution', 'hypothesis', 'regression'],
+        'linear algebra': ['linear algebra', 'matrix', 'vector', 'eigenvalue'],
+        'discrete': ['discrete', 'logic', 'set theory', 'graph theory', 'combinatorics']
+    }
+    
+    detected_subjects = []
+    for subject, keywords in subjects.items():
+        if any(keyword in message_lower for keyword in keywords):
+            detected_subjects.append(subject)
+    
+    # If specific subjects detected, find relevant skills
+    if detected_subjects:
+        skills = []
+        for subject in detected_subjects:
+            cursor.execute(
+                "SELECT skill_id, skill_name FROM Skills WHERE LOWER(subject) LIKE %s",
+                (f'%{subject}%',)
+            )
+            skills.extend(cursor.fetchall())
+        return skills
+    
+    # Check for skill level mentions
+    if any(word in message_lower for word in ['beginner', 'basic', 'start', 'beginning']):
+        cursor.execute(
+            "SELECT skill_id, skill_name FROM Skills WHERE skill_id <= 20 ORDER BY skill_id"
+        )
+        return cursor.fetchall()
+    
+    if any(word in message_lower for word in ['advanced', 'college', 'university']):
+        cursor.execute(
+            "SELECT skill_id, skill_name FROM Skills WHERE skill_id >= 127 ORDER BY skill_id"
+        )
+        return cursor.fetchall()
+    
+    return []
 
 # --- FastAPI App & Middleware ---
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -107,11 +165,82 @@ class ChatRequest(BaseModel):
     message: str
     user_id: str
 
+class SetGoalRequest(BaseModel):
+    user_id: str
+    goal_skill_id: int
+
+# --- New Endpoint for Setting Learning Goals ---
+@app.post("/set_goal")
+async def set_goal(request: SetGoalRequest):
+    username = request.user_id
+    goal_skill_id = request.goal_skill_id
+    
+    db_connection = get_db_connection()
+    if not db_connection:
+        return {"success": False, "message": "Database connection error"}
+    
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        
+        # Verify skill exists
+        cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (goal_skill_id,))
+        skill = cursor.fetchone()
+        
+        if not skill:
+            return {"success": False, "message": "Invalid skill ID"}
+        
+        # Update user session state
+        if username in user_session_state:
+            user_session_state[username]['goal_skill_id'] = goal_skill_id
+        
+        return {
+            "success": True,
+            "message": f"Learning goal set to: {skill['skill_name']}",
+            "skill_name": skill['skill_name']
+        }
+    finally:
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
+
+# --- New Endpoint for Getting Available Skills ---
+@app.get("/available_skills/{user_id}")
+async def get_available_skills(user_id: str):
+    db_connection = get_db_connection()
+    if not db_connection:
+        return {"skills": [], "error": "Database connection error"}
+    
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        
+        # Get user's numeric ID
+        cursor.execute("SELECT user_id FROM Users WHERE username = %s", (user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return {"skills": [], "message": "User not found"}
+        
+        numeric_user_id = user['user_id']
+        mastered_skills = get_mastered_skills(cursor, numeric_user_id)
+        
+        # Get skill suggestions
+        suggestions = get_skill_suggestions(cursor, mastered_skills)
+        
+        return {
+            "skills": suggestions,
+            "mastered_count": len(mastered_skills),
+            "total_skills": 207
+        }
+    finally:
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
+
 # --- Main Chat Endpoint (The Upgraded Brain) ---
 @app.post("/chat")
 async def chat_handler(chat_request: ChatRequest):
     username = chat_request.user_id
-    user_message = chat_request.message.strip() # Strip whitespace
+    user_message = chat_request.message
     ai_response = "An unexpected error occurred."
     db_connection = get_db_connection()
     if not db_connection: return {"reply": "Error: Could not connect to the database."}
@@ -128,156 +257,160 @@ async def chat_handler(chat_request: ChatRequest):
         else:
             numeric_user_id = user_record['user_id']
 
-        # Initialize session if not present or if user asks to start a new topic
-        if username not in user_session_state or user_message.lower() == "start new topic":
-            user_session_state[username] = {
-                "numeric_user_id": numeric_user_id,
-                "current_skill_id": None,
-                "skill_name": None,
-                "phase": "Select_Topic", # New initial phase
-                "last_question": None,
-                "goal_topic_name": None,
-                "goal_skill_id": None
-            }
+        # --- State Machine Logic ---
+        if username not in user_session_state:
+            mastered_skills = get_mastered_skills(cursor, numeric_user_id)
+            
+            # Check if user is asking about what to learn
+            if any(phrase in user_message.lower() for phrase in 
+                   ['what should i learn', 'what can i learn', 'help me choose', 
+                    'what\'s next', 'what subjects', 'what topics']):
+                suggestions = get_skill_suggestions(cursor, mastered_skills)
+                
+                if suggestions:
+                    response = "### Here are some skills you're ready to learn:\n\n"
+                    for i, skill in enumerate(suggestions[:5], 1):
+                        response += f"{i}. **{skill['skill_name']}** ({skill['subject']})\n"
+                    response += "\nTell me which subject interests you, or mention a specific topic!"
+                else:
+                    response = "You've mastered all available skills! Congratulations on completing the entire curriculum!"
+                
+                return {"reply": response}
+            
+            # Try to detect user intent from their message
+            potential_skills = analyze_user_intent(user_message, cursor)
+            
+            if potential_skills:
+                # Find the most appropriate skill based on prerequisites
+                for skill in potential_skills:
+                    prereqs = get_all_prerequisites(cursor, skill['skill_id'])
+                    if prereqs.issubset(mastered_skills):
+                        goal_skill_id = skill['skill_id']
+                        break
+                else:
+                    # If no skill with satisfied prerequisites, pick the first one
+                    goal_skill_id = potential_skills[0]['skill_id']
+            else:
+                # Default learning path based on mastered skills
+                if len(mastered_skills) < 7:
+                    goal_skill_id = 7  # Complete basic algebra first
+                elif len(mastered_skills) < 53:
+                    goal_skill_id = 53  # Complete Algebra I
+                elif len(mastered_skills) < 81:
+                    goal_skill_id = 81  # Complete Geometry
+                elif len(mastered_skills) < 108:
+                    goal_skill_id = 108  # Complete Algebra II
+                elif len(mastered_skills) < 126:
+                    goal_skill_id = 126  # Complete Pre-Calculus
+                elif len(mastered_skills) < 157:
+                    goal_skill_id = 157  # Complete Calculus
+                else:
+                    # Suggest college-level topics
+                    suggestions = get_skill_suggestions(cursor, mastered_skills)
+                    if suggestions:
+                        goal_skill_id = suggestions[0]['skill_id']
+                    else:
+                        return {"reply": "### Congratulations!\n\nYou have mastered the entire mathematics curriculum!"}
+            
+            next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
+            if next_skill_id:
+                cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
+                skill_record = cursor.fetchone()
+                user_session_state[username] = {
+                    "numeric_user_id": numeric_user_id,
+                    "current_skill_id": next_skill_id,
+                    "skill_name": skill_record['skill_name'],
+                    "subject": skill_record['subject'],
+                    "phase": "Crawl",
+                    "last_question": None,
+                    "goal_skill_id": goal_skill_id
+                }
+            else:
+                return {"reply": "### Congratulations!\n\nYou have mastered all available skills in your learning path!"}
 
         current_session = user_session_state[username]
         skill_name = current_session['skill_name']
+        subject = current_session.get('subject', 'Mathematics')
         phase = current_session['phase']
         last_question = current_session.get('last_question')
-        goal_topic_name = current_session['goal_topic_name']
-        goal_skill_id = current_session['goal_skill_id'] # Retrieve the goal_skill_id from session
 
-        # --- State Machine Logic ---
+        # --- Dynamic Prompt Generation & AI Call ---
         system_prompt = ""
-
-        if phase == "Select_Topic":
-            if user_message.lower() == "start new topic":
-                ai_response = "What specific math topic or concept would you like to learn today? For example, 'Geometry', 'Linear Algebra', 'Functions', or 'Pythagorean Theorem'."
-            else:
-                # Try to find the skill based on user's message
-                found_skill = search_for_skill_id(cursor, user_message)
-                if found_skill:
-                    # Found a potential starting point for the user's requested topic
-                    current_session['goal_skill_id'] = found_skill['skill_id']
-                    current_session['goal_topic_name'] = found_skill['skill_name'] # Store the *requested* high-level topic name
-                    
-                    mastered_skills = get_mastered_skills(cursor, numeric_user_id)
-                    next_skill_id = find_next_skill(cursor, mastered_skills, current_session['goal_skill_id'])
-
-                    if next_skill_id:
-                        cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (next_skill_id,))
-                        skill_record = cursor.fetchone()
-                        current_session['current_skill_id'] = next_skill_id
-                        current_session['skill_name'] = skill_record['skill_name']
-                        current_session['phase'] = 'Crawl' # Move to Crawl for the first skill in the new path
-                        skill_name = current_session['skill_name'] # Update skill_name for immediate use below
-                        phase = current_session['phase'] # Update phase for immediate use below
-                        system_prompt = f"You are a teacher. Your ONLY task is to EXPLAIN the concept of '{skill_name}'. Use Markdown: use bolding for key terms, lists, and wrap math in `code blocks`. Keep it simple. End by asking if the user understands."
-                        ai_response = "" # Will be filled by AI call
-                    else:
-                        # User already mastered the entire requested topic path
-                        ai_response = f"It looks like you've already mastered all the prerequisites for '{found_skill['skill_name']}'! What other topic would you like to explore?"
-                        # Reset session to allow selection of new topic
-                        user_session_state[username]['phase'] = 'Select_Topic'
-                        user_session_state[username]['goal_skill_id'] = None
-                        user_session_state[username]['goal_topic_name'] = None
-                else:
-                    # Could not find a matching skill
-                    ai_response = "I couldn't find a direct match for that topic. Please try being more specific, or choose from general subjects like 'Algebra', 'Geometry', 'Calculus', 'Linear Algebra', 'Discrete Math', or 'Statistics'."
-                    # Keep phase as Select_Topic
-
-        elif phase == "Crawl":
-            system_prompt = f"You are a teacher. Your ONLY task is to EXPLAIN the concept of '{skill_name}'. Use Markdown: use bolding for key terms, lists, and wrap math in `code blocks`. Keep it simple. End by asking if the user understands."
+        # The AI's only job is to EXPLAIN
+        if phase == "Crawl":
+            system_prompt = f"You are a teacher. Your ONLY task is to EXPLAIN the concept of '{skill_name}' from {subject}. Use Markdown: use bolding for key terms, lists, and wrap math in `code blocks`. Keep it simple and engaging. End by asking if the user understands."
             user_session_state[username]['phase'] = 'Walk_Ask'
+        # The AI's only job is to ASK a guided question
         elif phase == "Walk_Ask":
-            system_prompt = f"You are a friendly tutor. Your ONLY task is to ask a single, simple, leading question to help the user begin practicing '{skill_name}'. Do not solve it for them."
+            system_prompt = f"You are a friendly tutor. Your ONLY task is to ask a single, simple, leading question to help the user begin practicing '{skill_name}'. Do not solve it for them. Make it approachable and encouraging."
             user_session_state[username]['phase'] = 'Walk_Evaluate'
+        # The AI's only job is to EVALUATE the user's answer to the guided question
         elif phase == "Walk_Evaluate":
-            system_prompt = f"A user was asked: '{last_question}'. They responded: '{user_message}'. Is this a correct and logical step forward? Respond ONLY with a JSON object: {{\"is_correct\": boolean, \"feedback\": \"A short, one-sentence piece of feedback.\"}}"
+            system_prompt = f"A user was asked: '{last_question}'. They responded: '{user_message}'. Is this a correct and logical step forward? Respond ONLY with a JSON object: {{\"is_correct\": boolean, \"feedback\": \"A short, encouraging piece of feedback.\"}}"
             # If they get it right, we move to the real test. If not, we try another guided question.
-            # The actual phase change logic should be here based on assessment result
-            # For now, let's keep it simple and ensure we go to Run_Ask if correct, else back to Walk_Ask
-            # This will be handled after the AI response is parsed.
+            user_session_state[username]['phase'] = 'Run_Ask' # Assume correct for now, can add logic later
+        # The AI's only job is to ASK an assessment question
         elif phase == "Run_Ask":
-            system_prompt = f"You are an examiner. Your ONLY task is to ask one, direct assessment question to test mastery of '{skill_name}'. Do not include the answer."
+            system_prompt = f"You are an examiner. Your ONLY task is to ask one clear, direct assessment question to test mastery of '{skill_name}'. Do not include the answer. Make sure the question is appropriate for the skill level."
             user_session_state[username]['phase'] = 'Run_Evaluate'
+        # The AI's only job is to EVALUATE the assessment question
         elif phase == "Run_Evaluate":
             system_prompt = f"You are an AI grader. A student was asked the question: '{last_question}'. The student responded: '{user_message}'. First, in a <thinking> block, reason step-by-step if the answer is correct and complete. Second, based on your reasoning, respond ONLY with a single, minified JSON object in the format: {{\"is_correct\": boolean, \"feedback\": \"Your short, encouraging feedback here.\"}}"
+        # The AI's only job is to SUMMARIZE and introduce the next topic
         elif phase == "Summary":
-            # In summary, we check if the overall goal skill is mastered or if there's a next prerequisite
             mastered_skills = get_mastered_skills(cursor, numeric_user_id)
-            next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id) # Check against the overall goal!
-            
+            goal_skill_id = current_session.get('goal_skill_id', 207)
+            next_skill_id = find_next_skill(cursor, mastered_skills, goal_skill_id)
             if next_skill_id:
-                # If there's a next skill in the chosen path, move to it
-                cursor.execute("SELECT skill_name FROM Skills WHERE skill_id = %s", (next_skill_id,))
+                cursor.execute("SELECT skill_name, subject FROM Skills WHERE skill_id = %s", (next_skill_id,))
                 next_skill_record = cursor.fetchone()
-                user_session_state[username]['current_skill_id'] = next_skill_id
-                user_session_state[username]['skill_name'] = next_skill_record['skill_name']
-                user_session_state[username]['phase'] = 'Crawl' # Start Crawl for the new skill
-                system_prompt = f"The user just mastered '{skill_name}'. Briefly congratulate them and introduce the next topic: '{next_skill_record['skill_name']}'. Explain why it's the next logical step in learning '{goal_topic_name}'. End by asking if they are ready."
-                ai_response = "" # Will be filled by AI call
+                system_prompt = f"The user just mastered '{skill_name}'. Briefly congratulate them and introduce the next topic: '{next_skill_record['skill_name']}' from {next_skill_record['subject']}. Explain why it's the next logical step. End by asking if they are ready."
             else:
-                # The entire path for the chosen goal is complete
-                system_prompt = f"The user has just mastered '{skill_name}'. Congratulate them on completing the entire path for '{goal_topic_name}'! Ask them what other topic they would like to learn next."
-                del user_session_state[username] # Reset session to allow new topic selection
-                ai_response = "" # Will be filled by AI call
-
+                # Check if there are other skills to learn
+                suggestions = get_skill_suggestions(cursor, mastered_skills)
+                if suggestions:
+                    system_prompt = f"The user just mastered '{skill_name}' and completed their current learning path! Congratulate them and mention they can explore other topics like {suggestions[0]['skill_name']} from {suggestions[0]['subject']}."
+                else:
+                    system_prompt = "The user has just mastered the final skill. Congratulate them on completing the entire mathematics curriculum - from pre-algebra through college-level topics!"
+            del user_session_state[username]
 
         # --- AI Call and State Handling ---
-        # Only call AI if a system_prompt was generated
-        if system_prompt:
-            try:
-                print(f"--- Calling AI for {phase} phase ---")
-                response = generative_model.generate_content(system_prompt, request_options=request_options)
-                response_text = response.text
-                print(f"--- AI Response: ---\n{response_text}\n--------------------")
+        try:
+            print(f"--- Calling AI for {phase} phase ---")
+            response = generative_model.generate_content(system_prompt, request_options=request_options)
+            response_text = response.text
+            print(f"--- AI Response: ---\n{response_text}\n--------------------")
 
-                if phase.endswith("_Evaluate"):
-                    start_index = response_text.find('{')
-                    end_index = response_text.rfind('}')
-                    if start_index != -1 and end_index != -1:
-                        json_string = response_text[start_index:end_index+1]
-                        assessment = json.loads(json_string)
-                        ai_response = assessment.get("feedback", "Evaluation error.")
-                        
-                        if assessment.get("is_correct"):
-                            if phase == "Run_Evaluate": # Mastered!
-                                skill_id = current_session['current_skill_id']
-                                user_id = current_session['numeric_user_id']
-                                cursor.execute("INSERT INTO User_Skills (user_id, skill_id) VALUES (%s, %s) ON DUPLICATE KEY UPDATE skill_id=skill_id", (user_id, skill_id))
-                                db_connection.commit()
-                                user_session_state[username]['phase'] = 'Summary'
-                                ai_response += f"\n\n**Excellent! You've mastered: {skill_name}!**"
-                            elif phase == "Walk_Evaluate": # Correct in Walk, move to Run
-                                user_session_state[username]['phase'] = 'Run_Ask'
-                        else: # If evaluation is incorrect
-                            ai_response += "\nLet's try that another way."
-                            if phase == "Run_Evaluate": # Failed the test, go back to guided practice
-                                user_session_state[username]['phase'] = 'Walk_Ask'
-                            elif phase == "Walk_Evaluate": # Incorrect in Walk, stay in Walk_Ask for another guided question
-                                user_session_state[username]['phase'] = 'Walk_Ask'
-                    else:
-                        ai_response = "My evaluation response was malformed. Let's try again."
-                        if username in user_session_state: del user_session_state[username] # Reset state on severe error
+            if phase.endswith("_Evaluate"):
+                start_index = response_text.find('{')
+                end_index = response_text.rfind('}')
+                if start_index != -1 and end_index != -1:
+                    json_string = response_text[start_index:end_index+1]
+                    assessment = json.loads(json_string)
+                    ai_response = assessment.get("feedback", "Evaluation error.")
+                    if assessment.get("is_correct"):
+                        if phase == "Run_Evaluate": # Mastered!
+                            skill_id = current_session['current_skill_id']
+                            user_id = current_session['numeric_user_id']
+                            cursor.execute("INSERT INTO User_Skills (user_id, skill_id) VALUES (%s, %s) ON DUPLICATE KEY UPDATE skill_id=skill_id", (user_id, skill_id))
+                            db_connection.commit()
+                            user_session_state[username]['phase'] = 'Summary'
+                            ai_response += f"\n\n**🎉 Excellent! You've mastered: {skill_name}!**"
+                    else: # If evaluation is incorrect
+                        ai_response += "\nLet's try that another way."
+                        if phase == "Run_Evaluate": # Failed the test, go back to guided practice
+                           user_session_state[username]['phase'] = 'Walk_Ask'
                 else:
-                    ai_response = response_text
-                    if phase.endswith("_Ask"): # Store the question asked by the AI
-                        user_session_state[username]['last_question'] = response_text
-            except google_exceptions.GoogleAPIError as api_error:
-                ai_response = f"Google AI API error: {api_error}. Please try again."
-                print(f"Google API Error: {api_error}")
-                if username in user_session_state: del user_session_state[username] # Reset state on error
-            except Exception as e:
-                ai_response = f"An internal error occurred: {e}. Please try again."
-                print(f"General Error: {e}")
-                if username in user_session_state: del user_session_state[username] # Reset state on error
-        
-        # If ai_response was empty (because a system_prompt led to an AI call, and the response needs to be set), set it here.
-        # This prevents the initial "An unexpected error occurred." from showing.
-        if not ai_response:
-            ai_response = "..." # Placeholder, will be updated by AI response in the flow
-
+                    ai_response = "My evaluation response was malformed. Let's try again."
+            else:
+                ai_response = response_text
+                if phase.endswith("_Ask"):
+                    user_session_state[username]['last_question'] = response_text
+        except Exception as e:
+            ai_response = f"An API or logic error occurred: {e}"
+            print(e)
+            if username in user_session_state: del user_session_state[username] # Reset state on error
+            
     finally:
         if db_connection and db_connection.is_connected():
             cursor.close()
@@ -288,3 +421,62 @@ async def chat_handler(chat_request: ChatRequest):
 @app.get("/")
 def read_root():
     return {"message": "AI Tutor API is running!"}
+
+@app.get("/user_progress/{user_id}")
+async def get_user_progress(user_id: str):
+    """Get user's learning progress"""
+    db_connection = get_db_connection()
+    if not db_connection:
+        return {"error": "Database connection error"}
+    
+    try:
+        cursor = db_connection.cursor(dictionary=True)
+        
+        # Get user's numeric ID
+        cursor.execute("SELECT user_id FROM Users WHERE username = %s", (user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return {"error": "User not found"}
+        
+        numeric_user_id = user['user_id']
+        mastered_skills = get_mastered_skills(cursor, numeric_user_id)
+        
+        # Get skill details for mastered skills
+        mastered_details = []
+        if mastered_skills:
+            placeholders = ','.join(['%s'] * len(mastered_skills))
+            cursor.execute(
+                f"SELECT skill_id, skill_name, subject, category FROM Skills WHERE skill_id IN ({placeholders})",
+                tuple(mastered_skills)
+            )
+            mastered_details = cursor.fetchall()
+        
+        # Group by subject
+        progress_by_subject = {}
+        cursor.execute("SELECT DISTINCT subject FROM Skills")
+        subjects = [row['subject'] for row in cursor.fetchall()]
+        
+        for subject in subjects:
+            cursor.execute("SELECT COUNT(*) as total FROM Skills WHERE subject = %s", (subject,))
+            total = cursor.fetchone()['total']
+            
+            mastered_in_subject = len([s for s in mastered_details if s['subject'] == subject])
+            
+            progress_by_subject[subject] = {
+                'mastered': mastered_in_subject,
+                'total': total,
+                'percentage': round((mastered_in_subject / total * 100) if total > 0 else 0, 1)
+            }
+        
+        return {
+            'total_mastered': len(mastered_skills),
+            'total_skills': 207,
+            'overall_percentage': round((len(mastered_skills) / 207 * 100), 1),
+            'progress_by_subject': progress_by_subject,
+            'recent_skills': mastered_details[-5:] if mastered_details else []
+        }
+    finally:
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
