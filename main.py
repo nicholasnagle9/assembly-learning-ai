@@ -213,9 +213,10 @@ class SkillResponse(BaseModel):
     description: Optional[str] = None
 
 # --- New Endpoint for Getting Prerequisites for a Goal ---
+# --- REVISED Endpoint for Getting Prerequisites for a Goal ---
 @app.get("/skills/prerequisites_for_goal/{goal_skill_id}", response_model=List[SkillResponse])
 async def get_prerequisites_for_goal(goal_skill_id: int, user_id: str):
-    """Get all unmastered prerequisite skills needed for a goal skill for a specific user"""
+    """Get all UNMASTERED prerequisite skills needed for a goal skill for a specific user."""
     db_connection = get_db_connection()
     if not db_connection:
         raise HTTPException(status_code=500, detail="Database connection error")
@@ -223,26 +224,26 @@ async def get_prerequisites_for_goal(goal_skill_id: int, user_id: str):
     try:
         cursor = db_connection.cursor(dictionary=True)
         
-        # Get user's numeric ID
+        # 1. (FIX) Get the specific user's numeric ID from the provided 'user_id' string.
         cursor.execute("SELECT user_id FROM Users WHERE username = %s", (user_id,))
         user = cursor.fetchone()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         numeric_user_id = user['user_id']
         
-        # Get user's mastered skills
+        # 2. (FIX) Get the skills this specific user has already mastered.
         mastered_skills = get_mastered_skills(cursor, numeric_user_id)
 
-        # Get all prerequisites recursively
+        # 3. Get all prerequisites for the goal skill.
         all_prereqs = get_all_prerequisites_recursive(cursor, goal_skill_id)
         
-        # Filter out the ones the user has already mastered
+        # 4. (FIX) Calculate the prerequisites the user has NOT yet mastered.
         unmastered_prereqs = all_prereqs - mastered_skills
 
         if not unmastered_prereqs:
             return []
         
-        # Get skill details for all unmastered prerequisites
+        # 5. Get and return the details for only the unmastered skills.
         placeholders = ','.join(['%s'] * len(unmastered_prereqs))
         query = f"""
             SELECT skill_id, skill_name, subject, category, description 
@@ -255,11 +256,13 @@ async def get_prerequisites_for_goal(goal_skill_id: int, user_id: str):
         skills = cursor.fetchall()
         return [SkillResponse(**skill) for skill in skills]
         
+    except mysql.connector.Error as e:
+        print(f"Database error in get_prerequisites_for_goal: {e}")
+        raise HTTPException(status_code=500, detail="A database error occurred.")
     finally:
         if db_connection and db_connection.is_connected():
             cursor.close()
             db_connection.close()
-
 # --- New Endpoint for Getting Single Skill Details ---
 @app.get("/skills/{skill_id}", response_model=SkillResponse)
 async def get_skill(skill_id: int):
