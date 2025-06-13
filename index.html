@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Assembly Learning AI MVP</title>
-    <!-- FIX 1: Correctly load the script from the full, absolute URL -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         :root {
@@ -130,8 +129,8 @@
     </main>
 
     <script>
-        // FIX 2: Use the correct, absolute URL for your backend API
-        const API_URL = 'http://127.0.0.1:8000/chat'; 
+        // --- FIX: Use the server's public IP address ---
+        const API_URL = 'http://165.227.109.220:8000/chat'; 
         const STORAGE_KEY = 'assemblyLearnerCode';
 
         // --- DOM Elements ---
@@ -228,7 +227,6 @@
                 localStorage.setItem(STORAGE_KEY, newCode);
                 updateCodeDisplay();
                 chatMessages.innerHTML = ''; 
-                // FIX 3: Send the special initialization message when resuming with a new code
                 sendMessage("##INITIALIZE##", accessCode, true);
             }
         });
@@ -236,7 +234,6 @@
         // --- Initial Load ---
         window.addEventListener('load', () => {
             updateCodeDisplay();
-            // FIX 3: Send a special, invisible message to initialize the session
             sendMessage("##INITIALIZE##", accessCode, true);
         });
     </script>

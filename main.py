@@ -15,11 +15,11 @@ import traceback
 load_dotenv()
 app = FastAPI()
 
-# --- CORS Middleware Configuration ---
-# This explicitly tells the server to accept requests from your local domain.
+# --- FIX: More permissive CORS for debugging ---
+# This allows requests from your specific local domain AND a wildcard for testing.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://ai-tutor.local"],
+    allow_origins=["http://ai-tutor.local", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,7 +62,6 @@ def generate_access_code() -> str:
     return f"{random.choice(adjectives)}-{random.choice(nouns)}-{secrets.randbelow(100)}"
 
 def get_or_create_user(cursor, access_code: Optional[str]) -> Dict:
-    # ADDED LOGGING: Let's see what access code we receive
     print(f"Attempting to find user with access_code: {access_code}")
     if access_code:
         cursor.execute("SELECT * FROM Users WHERE access_code = %s", (access_code,))
@@ -153,7 +152,6 @@ async def chat_handler(req: ChatRequest):
         user_message = req.message
         ai_response = "I'm not sure how to respond."
 
-        # ADDED LOGGING: Print current state at the beginning of a request
         print(f"\n--- NEW REQUEST ---")
         print(f"Access Code: {access_code}, User ID: {user_id}")
         print(f"Incoming Message: '{user_message}'")
@@ -310,9 +308,8 @@ async def chat_handler(req: ChatRequest):
         session['last_ai_reply'] = ai_response
         cursor.execute("UPDATE Users SET session_state = %s WHERE user_id = %s", (json.dumps(session), user_id))
         db.commit()
-        # ADDED LOGGING: Print the final state and response being sent
         print(f"Session AFTER processing: {session}")
-        print(f"Final AI Response: '{ai_response[:100]}...'") # Log first 100 chars
+        print(f"Final AI Response: '{ai_response[:100]}...'")
         print(f"--- END REQUEST ---\n")
         return ChatResponse(reply=ai_response, access_code=access_code)
 
