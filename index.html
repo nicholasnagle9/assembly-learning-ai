@@ -505,38 +505,65 @@
             }
         }
 
-        async function displayPrerequisiteChecklist(goalSkillId) {
-            modalBody.innerHTML = '<div class="loading">Loading prerequisites</div>';
-            prerequisiteModal.classList.add('show');
-            
-            try {
-                const [prereqResponse, goalResponse] = await Promise.all([
-                    fetch(`/skills/prerequisites_for_goal/${goalSkillId}?user_id=${currentUserId}`),
-                    fetch(`/skills/${goalSkillId}`)
-                ]);
+        // --- NEW DEBUGGING VERSION of displayPrerequisiteChecklist ---
+async function displayPrerequisiteChecklist(goalSkillId) {
+    modalBody.innerHTML = '<div class="loading">Loading prerequisites</div>';
+    prerequisiteModal.classList.add('show');
+    submitBtn.style.display = 'block'; // Ensure button is visible by default
 
-                if (!prereqResponse.ok) throw new Error('Failed to fetch prerequisites');
-                if (!goalResponse.ok) throw new Error('Failed to fetch goal skill details');
-
-                const prerequisites = await prereqResponse.json();
-                const goalSkill = await goalResponse.json();
-                
-                modalTitle.textContent = `Prerequisites for: ${goalSkill.skill_name}`;
-                
-                if (prerequisites.length === 0) {
-                     modalBody.innerHTML = '<div style="text-align:center; padding: 20px;">It looks like you have already mastered all the prerequisites for this topic!</div>';
-                     submitBtn.style.display = 'none'; // Hide submit button if nothing to select
-                } else {
-                    const groupedSkills = groupSkillsBySubjectAndCategory(prerequisites);
-                    renderGroupedSkills(groupedSkills);
-                    submitBtn.style.display = 'block';
-                }
-
-            } catch (error) {
-                console.error('Error displaying prerequisites:', error);
-                modalBody.innerHTML = `<div style="color: red; text-align: center;">Error loading prerequisites: ${error.message}</div>`;
-            }
+    try {
+        // We'll fetch responses one by one to isolate the error.
+        const goalResponse = await fetch(`/skills/${goalSkillId}`);
+        if (!goalResponse.ok) {
+            const errorText = await goalResponse.text();
+            throw new Error(`Failed to fetch goal skill details (status ${goalResponse.status}). Server said: ${errorText}`);
         }
+
+        // Try to parse the goal skill response
+        let goalSkill;
+        try {
+            goalSkill = await goalResponse.clone().json(); // Clone response to be able to read body again if json fails
+        } catch (e) {
+            const rawText = await goalResponse.text();
+            console.error("RAW RESPONSE (Goal Skill):", rawText);
+            throw new Error(`The server sent invalid JSON when fetching the goal skill name. The raw response starts with: '${rawText.substring(0, 100)}...'`);
+        }
+        
+        modalTitle.textContent = `Prerequisites for: ${goalSkill.skill_name}`;
+
+        // Now, fetch the prerequisites
+        const prereqResponse = await fetch(`/skills/prerequisites_for_goal/${goalSkillId}?user_id=${currentUserId}`);
+        if (!prereqResponse.ok) {
+            const errorText = await prereqResponse.text();
+            throw new Error(`Failed to fetch prerequisites (status ${prereqResponse.status}). Server said: ${errorText}`);
+        }
+        
+        // Try to parse the prerequisites response
+        let prerequisites;
+        try {
+            prerequisites = await prereqResponse.clone().json();
+        } catch (e) {
+            const rawText = await prereqResponse.text();
+            console.error("RAW RESPONSE (Prerequisites):", rawText);
+            throw new Error(`The server sent invalid JSON when fetching the prerequisites. The raw response starts with: '${rawText.substring(0, 200)}...'`);
+        }
+        
+        // --- If both fetches succeeded, render the skills (original logic) ---
+        if (prerequisites.length === 0) {
+             modalBody.innerHTML = '<div style="text-align:center; padding: 20px;">It looks like you have already mastered all the prerequisites for this topic!</div>';
+             submitBtn.style.display = 'none';
+        } else {
+            const groupedSkills = groupSkillsBySubjectAndCategory(prerequisites);
+            renderGroupedSkills(groupedSkills);
+        }
+
+    } catch (error) {
+        console.error('Error in displayPrerequisiteChecklist:', error);
+        // Display the new, detailed error in the modal
+        modalBody.innerHTML = `<div style="padding: 20px; color: red; font-family: monospace; white-space: pre-wrap; word-wrap: break-word;"><strong>An error occurred:</strong><br><br>${error.message}</div>`;
+        submitBtn.style.display = 'none'; // Hide submit button on error
+    }
+}
 
         function groupSkillsBySubjectAndCategory(skills) {
             const grouped = {};
