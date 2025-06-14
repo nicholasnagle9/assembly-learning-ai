@@ -16,6 +16,7 @@ SYSTEM_PERSONA_PROMPT = """
 You are "Asmby," an expert, encouraging, and friendly math tutor. Your entire focus is on teaching mathematics.
 You must NEVER discuss or ask questions about non-math subjects unless it's a direct, real-world analogy to explain a math concept.
 You should always be patient and guide the user. When a user is vague, help them narrow down their interest by asking clarifying questions or providing relevant suggestions.
+Avoid re-introducing yourself in the middle of a lesson. Maintain a continuous, natural conversation.
 """
 
 # --- Configuration & Initialization ---
@@ -66,15 +67,13 @@ def ask_ai(prompt):
     try: return generative_model.generate_content(full_prompt, request_options=request_options).text.strip()
     except Exception as e: print(f"AI Error: {e}"); return "Sorry, I had trouble thinking."
 
-# --- NEW: "Acknowledge and Refine" Evaluation ---
 def collaborative_evaluation_with_ai(question, user_answer):
-    prompt = f"""You are a collaborative and encouraging tutor. A user was asked: '{question}'. They responded: '{user_answer}'.
+    prompt = f"""A user was asked: '{question}'. They responded: '{user_answer}'.
     Your task is to:
     1. Start by explicitly acknowledging and praising what is CORRECT in their answer.
-    2. Then, gently identify ONE key area for improvement or refinement. If there are no mistakes, just give positive reinforcement.
-    3. Based on their overall grasp, determine if they are ready to proceed to the next step.
-    Respond ONLY with a JSON object: {{"can_proceed": boolean, "collaborative_feedback": "Your full, conversational response here."}}
-    """
+    2. Then, gently identify ONE key area for improvement. If there are no mistakes, just give positive reinforcement.
+    3. Based on their overall grasp, determine if they are ready to proceed.
+    Respond ONLY with a JSON object: {{"can_proceed": boolean, "collaborative_feedback": "Your full, conversational response here."}}"""
     response_text = ask_ai(prompt)
     try:
         if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
@@ -119,7 +118,9 @@ async def chat_handler(req: ChatRequest):
                 return_point = session.get("return_point", {})
                 session = return_point
                 last_question = session.get("last_question", "Let's try that again.")
-                ai_response = f"Great, glad that's clearer!\n\n---\n**Now, back to our original question:**\n{last_question}"
+                # --- FIX: Graceful return in one message ---
+                ai_response = f"Great, glad that's clearer!\n\n---\n**Let's get back to our original question:**\n\n{last_question}"
+                # The state is now restored, ready for the user's answer to the original question.
             else:
                 topic = session.get('return_point', {}).get('current_skill_record', {}).get('skill_name', 'the current topic')
                 prompt = f"The user is in a clarification loop about '{topic}'. They have a follow-up question: '{user_message}'. Provide a helpful, concise answer."
@@ -132,7 +133,7 @@ async def chat_handler(req: ChatRequest):
             if intent == "Asking_Clarification":
                 session['return_point'] = session.copy()
                 session['phase'] = "Clarification_Mode"
-                topic = session.get('return_point', {}).get('current_skill_record', {}).get('skill_name', 'the current topic')
+                topic = session.get('current_skill_record', {}).get('skill_name', 'the current topic')
                 prompt = f"The user is learning about '{topic}' and asked for clarification: '{user_message}'. Provide a helpful explanation with real-world examples."
                 ai_response = ask_ai(prompt)
                 session['last_clarification_reply'] = ai_response
@@ -160,8 +161,10 @@ async def chat_handler(req: ChatRequest):
 
                     elif phase == "Dive_In_Crawl":
                         skill_record = session['current_skill_record']
-                        prompt = f"Explain '{skill_record['skill_name']}'. Use this as a guide, but create your own detailed explanation with analogies: '{skill_record['crawl_prompt']}'"
-                        ai_response = f"{ask_ai(prompt)}\n\n---\n**Does this make sense, or should we cover the 'assembly' concepts first?**"
+                        # --- FIX: Removed repetitive intro from prompt ---
+                        prompt = f"Explain the concept of '{skill_record['skill_name']}'. Use the following as a guide, but create your own detailed explanation with fresh analogies: '{skill_record['crawl_prompt']}'"
+                        explanation = ask_ai(prompt)
+                        ai_response = f"{explanation}\n\n---\n**Does this make sense, or should we cover the 'assembly' concepts first?**"
                         session['phase'] = "Awaiting_Checkpoint_Response"
 
                     elif phase == "Awaiting_Checkpoint_Response":
@@ -196,22 +199,22 @@ async def chat_handler(req: ChatRequest):
                         else: ai_response, session = "You've finished your learning plan! What's next?", {"phase": "Awaiting_Goal"}
                     
                     elif phase == "Walk_Ask":
-                        prompt = f"Create a simple, guided question for '{session['current_skill_record']['skill_name']}'. Inspiration: '{session['current_skill_record']['walk_prompt']}'"
+                        # --- FIX: Simpler, non-repetitive prompt ---
+                        prompt = f"Create a simple, focused, guided practice question for the concept: '{session['current_skill_record']['skill_name']}'."
                         question = ask_ai(prompt)
                         ai_response, session['last_question'], session['phase'] = question, question, 'Walk_Evaluate'
 
                     elif phase == "Walk_Evaluate":
                         # --- NEW: "Trust but Verify" Logic ---
                         if session.get("is_awaiting_feedback_response"):
-                            affirmatives = ["yes", "ok", "makes sense", "got it", "continue", "sure"]
+                            affirmatives = ["yes", "ok", "makes sense", "got it", "continue", "sure", "i understand"]
                             if any(word in user_message.lower() for word in affirmatives):
-                                ai_response = "Great! Let's try a slightly different question to be sure."
-                                prompt = f"Generate a new, slightly different guided practice question for '{session['current_skill_record']['skill_name']}', different from: '{session['last_question']}'"
+                                prompt = f"The user says they now understand '{session['current_skill_record']['skill_name']}'. Generate a new, slightly different practice question to verify their understanding. It must be different from the last question: '{session['last_question']}'"
                                 new_question = ask_ai(prompt)
-                                ai_response += f"\n\n{new_question}"
+                                ai_response = f"Great! Let's try a slightly different question to be sure.\n\n{new_question}"
                                 session['last_question'] = new_question
-                                session.pop("is_awaiting_feedback_response", None)
-                                session['phase'] = 'Walk_Evaluate'
+                                session.pop("is_awaiting_feedback_response", None) # Clear the flag
+                                session['phase'] = 'Walk_Evaluate' # Re-evaluate with the new question
                             else:
                                 ai_response, session['phase'] = "No problem, let's go over the main concept again.", 'Crawl'
                         else:
@@ -224,15 +227,18 @@ async def chat_handler(req: ChatRequest):
                                 ai_response += "\n\nDoes that explanation help clarify things for you?"
 
                     elif phase == "Run_Ask":
-                        prompt = f"Create a direct assessment question for '{session['current_skill_record']['skill_name']}'. Inspiration: '{session['current_skill_record']['run_prompt']}'"
+                        # --- FIX: Simpler, non-repetitive prompt ---
+                        prompt = f"Create one direct, single-concept assessment question to test mastery of '{session['current_skill_record']['skill_name']}'."
                         question = ask_ai(prompt)
                         ai_response, session['last_question'], session['phase'] = question, question, 'Run_Evaluate'
 
                     elif phase == "Run_Evaluate":
                         evaluation = collaborative_evaluation_with_ai(session['last_question'], user_message)
                         ai_response = evaluation.get('collaborative_feedback', 'Got it.')
-                        if evaluation.get('can_proceed'): session['phase'], continue_loop = 'Summary', True
-                        else: ai_response += "\n\nLet's review this concept one more time."; session['phase'] = 'Crawl'
+                        if evaluation.get('can_proceed'): 
+                            session['phase'], continue_loop = 'Summary', True
+                        else: 
+                            ai_response += "\n\nLet's review this concept one more time."; session['phase'] = 'Crawl'
 
                     elif phase == "Summary":
                         skill_record = session['current_skill_record']
