@@ -46,10 +46,26 @@ def get_or_create_user(cursor, access_code: Optional[str]) -> Dict:
             cursor.execute("SELECT * FROM Users WHERE user_id = %s", (user_id,)); return cursor.fetchone()
 
 # --- Knowledge Graph & AI Helpers ---
-def get_all_skills_with_details(cursor):
-    return {row['skill_id']: row for row in cursor.execute("SELECT * FROM Skills", multi=True)}
+# --- FIX: Correctly fetch results from the database cursor ---
+def get_all_skills_with_details(cursor) -> Dict[int, Dict]:
+    skills_dict = {}
+    cursor.execute("SELECT * FROM Skills")
+    for row in cursor.fetchall():
+        skills_dict[row['skill_id']] = row
+    return skills_dict
+def get_all_skills_by_subject(cursor) -> Dict[str, List[Dict]]:
+    skills_by_subject = {}
+    cursor.execute("SELECT skill_id, skill_name, subject FROM Skills ORDER BY subject, skill_id")
+    for row in cursor.fetchall():
+        subject = row.get('subject', 'General')
+        if subject not in skills_by_subject: skills_by_subject[subject] = []
+        skills_by_subject[subject].append({"id": row['skill_id'], "name": row['skill_name']})
+    return skills_by_subject
 def get_mastered_skills(cursor, user_id):
     cursor.execute("SELECT skill_id FROM User_Skills WHERE user_id = %s", (user_id,)); return {row['skill_id'] for row in cursor.fetchall()}
+def get_direct_prerequisites(cursor, skill_id):
+    query = "SELECT p.prerequisite_id, s.skill_name FROM Prerequisites p JOIN Skills s ON p.prerequisite_id = s.skill_id WHERE p.skill_id = %s"
+    cursor.execute(query, (skill_id,)); return cursor.fetchall()
 def mark_skill_as_mastered(cursor, user_id, skill_id):
     cursor.execute("INSERT IGNORE INTO User_Skills (user_id, skill_id) VALUES (%s, %s)", (user_id, skill_id))
 
@@ -234,14 +250,13 @@ async def chat_handler(req: ChatRequest):
                         plan, index = session.get('learning_plan', []), session.get('current_skill_index', 0)
                         if index < len(plan): session['phase'], continue_loop = 'Crawl', True 
                         else:
-                            # Proactive "What's Next"
                             mastered_ids = get_mastered_skills(cursor, user_id)
                             cursor.execute(f"SELECT p.skill_id, s.skill_name, s.educational_stage FROM Prerequisites p JOIN Skills s ON p.skill_id = s.skill_id WHERE p.prerequisite_id IN ({','.join(map(str, mastered_ids)) or 'NULL'})")
                             next_logical_skills = [s for s in cursor.fetchall() if s['skill_id'] not in mastered_ids]
                             if next_logical_skills:
-                                next_skill = next_logical_skills[0]
-                                ai_response += f"\n\nA great next step would be **{next_skill['skill_name']}** ({next_skill['educational_stage']}). Ready to continue?"
-                                session = {"phase": "Awaiting_Goal"} # Let them confirm or state a new goal
+                                next_skill = random.choice(next_logical_skills) # Suggest a random next topic
+                                ai_response += f"\n\nA great next step could be **{next_skill['skill_name']}** ({next_skill['educational_stage']}). Ready to continue?"
+                                session = {"phase": "Awaiting_Goal"}
                             else:
                                 ai_response += "\n\nCongratulations! You've completed all available learning paths. What would you like to review?"
                                 session = {"phase": "Awaiting_Goal"}
