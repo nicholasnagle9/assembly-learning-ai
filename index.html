@@ -3,14 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Assembly Learning AI MVP</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <title>Assembly Learning AI V2</title>
+    <script src="[https://cdn.jsdelivr.net/npm/marked/marked.min.js](https://cdn.jsdelivr.net/npm/marked/marked.min.js)"></script>
     <style>
         :root {
             --user-msg-bg: #007bff;
             --ai-msg-bg: #f1f0f0;
             --bg-grad-1: #84fab0;
             --bg-grad-2: #8fd3f4;
+            --accent-color: #6a11cb;
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -23,85 +24,29 @@
             margin: 0;
         }
         .chat-container {
-            width: 100%;
-            max-width: 800px;
-            height: 90vh;
-            background: rgba(255, 255, 255, 0.6);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.2);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            width: 100%; max-width: 800px; height: 90vh; background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(10px); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.2); display: flex; flex-direction: column; overflow: hidden;
         }
-        .persistence-header {
-            padding: 10px 20px;
-            background: rgba(0, 0, 0, 0.1);
-            font-size: 0.9em;
-            text-align: center;
-            color: #333;
+        .header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 20px; background: rgba(0, 0, 0, 0.1); font-size: 0.9em; text-align: center; color: #333;
         }
+        #skill-tree-btn {
+            padding: 5px 15px; border: none; background: var(--accent-color); color: white;
+            border-radius: 15px; cursor: pointer; font-weight: bold; transition: background 0.3s;
+        }
+        #skill-tree-btn:hover { background: #923cfb; }
         #access-code-display {
-            font-weight: bold;
-            background: #fff;
-            padding: 2px 6px;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        #manual-code-area {
-            display: none; /* Initially hidden */
-            padding: 5px 20px 10px;
-            background: rgba(0, 0, 0, 0.05);
-            text-align: center;
-        }
-        #manual-code-area input {
-            padding: 5px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        #manual-code-area button {
-            padding: 5px 10px;
-            border: none;
-            background: var(--user-msg-bg);
-            color: white;
-            border-radius: 4px;
-            cursor: pointer;
+            font-weight: bold; background: #fff; padding: 2px 6px; border-radius: 4px; cursor: pointer;
         }
         #chat-messages {
-            flex-grow: 1;
-            padding: 20px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
+            flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px;
         }
-        .message {
-            padding: 12px 18px;
-            border-radius: 18px;
-            max-width: 85%;
-            line-height: 1.6;
-            word-wrap: break-word;
-        }
-        .user-message {
-            background-color: var(--user-msg-bg);
-            color: white;
-            align-self: flex-end;
-            border-bottom-right-radius: 4px;
-        }
-        .ai-message {
-            background-color: var(--ai-msg-bg);
-            color: #333;
-            align-self: flex-start;
-            border-bottom-left-radius: 4px;
-        }
-        .ai-message p:last-child { margin-bottom: 0; }
-        .ai-message pre { background-color: #e9ecef; padding: 15px; border-radius: 8px; margin: 1em 0; white-space: pre-wrap; }
-        #chat-form {
-            display: flex;
-            padding: 15px;
-            border-top: 1px solid rgba(255, 255, 255, 0.18);
-        }
+        .message { padding: 12px 18px; border-radius: 18px; max-width: 85%; line-height: 1.6; word-wrap: break-word; }
+        .user-message { background-color: var(--user-msg-bg); color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
+        .ai-message { background-color: var(--ai-msg-bg); color: #333; align-self: flex-start; border-bottom-left-radius: 4px; }
+        #chat-form { display: flex; padding: 15px; border-top: 1px solid rgba(255, 255, 255, 0.18); }
         #user-input {
             flex-grow: 1; border: none; padding: 12px 15px; border-radius: 20px; font-size: 16px; background: rgba(255, 255, 255, 0.8);
             outline: none; margin-right: 10px; resize: none; font-family: inherit;
@@ -110,17 +55,35 @@
             border: none; background: var(--user-msg-bg); color: white; font-weight: bold; padding: 12px 20px;
             border-radius: 20px; cursor: pointer; transition: background 0.3s ease;
         }
+        /* --- NEW: Skill Tree Modal Styles --- */
+        .modal {
+            display: none; position: fixed; z-index: 1000; left: 0; top: 0;
+            width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s;
+        }
+        .modal-content {
+            background-color: #fefefe; margin: 5% auto; padding: 25px; border-radius: 15px;
+            border: 1px solid #888; width: 80%; max-width: 900px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            max-height: 80vh; overflow-y: auto;
+        }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 15px; border-bottom: 1px solid #ddd; }
+        .close-btn { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close-btn:hover, .close-btn:focus { color: black; text-decoration: none; }
+        #skill-tree-container h2 { margin-top: 20px; padding-bottom: 5px; border-bottom: 2px solid var(--accent-color); color: #333; }
+        #skill-tree-container h3 { margin-top: 15px; color: #555; }
+        #skill-tree-container ul { list-style: none; padding-left: 10px; }
+        #skill-tree-container li { padding: 8px; margin: 4px 0; border-radius: 5px; background: #f9f9f9; }
+        .mastered-skill { background: #d4edda; color: #155724; text-decoration: line-through; }
+        .mastered-skill::before { content: '✓ '; color: #155724; font-weight: bold; }
+        @keyframes fadeIn { from {opacity: 0} to {opacity: 1} }
     </style>
 </head>
 <body>
     <main class="chat-container">
-        <header class="persistence-header">
-            Your progress code: <span id="access-code-display" title="Click to enter a different code">loading...</span>
+        <header class="header">
+            <div>Your Code: <span id="access-code-display" title="Click to enter a different code">loading...</span></div>
+            <button id="skill-tree-btn">My Progress</button>
         </header>
-        <div id="manual-code-area">
-            <input type="text" id="code-input" placeholder="Enter your code">
-            <button id="resume-button">Resume</button>
-        </div>
         <section id="chat-messages"></section>
         <form id="chat-form">
             <textarea id="user-input" placeholder="Type your message..." rows="1"></textarea>
@@ -128,9 +91,21 @@
         </form>
     </main>
 
+    <!-- NEW: Skill Tree Modal HTML -->
+    <div id="skill-tree-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Your Knowledge Tree</h2>
+                <span class="close-btn">&times;</span>
+            </div>
+            <div id="skill-tree-container">
+                <p>Loading your progress...</p>
+            </div>
+        </div>
+    </div>
+
     <script>
-        // --- FIX: Use the server's public IP address ---
-        const API_URL = 'http://165.227.109.220:8000/chat'; 
+        const API_URL = '[http://165.227.109.220:8000](http://165.227.109.220:8000)'; 
         const STORAGE_KEY = 'assemblyLearnerCode';
 
         // --- DOM Elements ---
@@ -138,103 +113,92 @@
         const userInput = document.getElementById('user-input');
         const chatMessages = document.getElementById('chat-messages');
         const codeDisplay = document.getElementById('access-code-display');
-        const manualCodeArea = document.getElementById('manual-code-area');
-        const codeInput = document.getElementById('code-input');
-        const resumeButton = document.getElementById('resume-button');
+        const skillTreeBtn = document.getElementById('skill-tree-btn');
+        const modal = document.getElementById('skill-tree-modal');
+        const closeBtn = document.querySelector('.close-btn');
+        const skillTreeContainer = document.getElementById('skill-tree-container');
 
         let accessCode = localStorage.getItem(STORAGE_KEY);
 
         // --- Core Functions ---
         async function sendMessage(message, code, isInitialization = false) {
-            if (!isInitialization) {
-                addMessageToChat(message, 'user-message');
-            }
+            if (!isInitialization) addMessageToChat(message, 'user-message');
             const typingIndicator = addMessageToChat('AI is thinking...', 'ai-message');
-
             try {
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                const response = await fetch(`${API_URL}/chat`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: message, access_code: code }),
                 });
-
                 chatMessages.removeChild(typingIndicator);
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail || 'Network response was not ok');
-                }
-
+                if (!response.ok) { const err = await response.json(); throw new Error(err.detail); }
                 const data = await response.json();
-                
                 if (data.access_code && data.access_code !== accessCode) {
                     accessCode = data.access_code;
                     localStorage.setItem(STORAGE_KEY, accessCode);
                     updateCodeDisplay();
                 }
-
                 addMessageToChat(data.reply, 'ai-message', true);
-
             } catch (error) {
-                if (typingIndicator.parentNode) {
-                    chatMessages.removeChild(typingIndicator);
-                }
-                addMessageToChat(`Sorry, I ran into an error: ${error.message}`, 'ai-message');
-                console.error('Fetch Error:', error);
+                if(typingIndicator.parentNode) chatMessages.removeChild(typingIndicator);
+                addMessageToChat(`Sorry, an error occurred: ${error.message}`, 'ai-message');
             }
         }
-
         function addMessageToChat(text, className, useMarkdown = false) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${className}`;
-            if (useMarkdown && window.marked) {
-                messageDiv.innerHTML = marked.parse(text);
-            } else {
-                messageDiv.textContent = text;
-            }
-            chatMessages.appendChild(messageDiv);
+            const div = document.createElement('div');
+            div.className = `message ${className}`;
+            div.innerHTML = useMarkdown && window.marked ? marked.parse(text) : text;
+            chatMessages.appendChild(div);
             chatMessages.scrollTop = chatMessages.scrollHeight;
-            return messageDiv;
+            return div;
+        }
+        function updateCodeDisplay() {
+            codeDisplay.textContent = accessCode || 'None';
         }
 
-        function updateCodeDisplay() {
-            if (accessCode) {
-                codeDisplay.textContent = accessCode;
-                manualCodeArea.style.display = 'none';
-            } else {
-                codeDisplay.textContent = 'None';
+        // --- NEW: Skill Tree Logic ---
+        async function showSkillTree() {
+            modal.style.display = 'block';
+            skillTreeContainer.innerHTML = '<p>Loading your progress...</p>';
+            try {
+                const response = await fetch(`${API_URL}/skill-tree`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_code: accessCode }),
+                });
+                if (!response.ok) throw new Error('Could not load progress.');
+                const data = await response.json();
+                
+                let html = '';
+                const masteredSet = new Set(data.mastered_skill_ids);
+
+                for (const stage in data.skill_tree) {
+                    html += `<h2>${stage}</h2>`;
+                    for (const topic in data.skill_tree[stage]) {
+                        html += `<h3>${topic}</h3><ul>`;
+                        for (const skill of data.skill_tree[stage][topic]) {
+                            const isMastered = masteredSet.has(skill.id);
+                            html += `<li class="${isMastered ? 'mastered-skill' : ''}">${skill.name}</li>`;
+                        }
+                        html += `</ul>`;
+                    }
+                }
+                skillTreeContainer.innerHTML = html;
+            } catch (error) {
+                skillTreeContainer.innerHTML = `<p>Error: ${error.message}</p>`;
             }
         }
 
         // --- Event Listeners ---
-        chatForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const messageText = userInput.value.trim();
-            if (!messageText) return;
-
-            userInput.value = '';
-            sendMessage(messageText, accessCode);
+        chatForm.addEventListener('submit', e => {
+            e.preventDefault();
+            const msg = userInput.value.trim();
+            if (msg) { userInput.value = ''; sendMessage(msg, accessCode); }
         });
-
-        codeDisplay.addEventListener('click', () => {
-            manualCodeArea.style.display = manualCodeArea.style.display === 'block' ? 'none' : 'block';
-        });
-
-        resumeButton.addEventListener('click', () => {
-            const newCode = codeInput.value.trim();
-            if (newCode) {
-                accessCode = newCode;
-                localStorage.setItem(STORAGE_KEY, newCode);
-                updateCodeDisplay();
-                chatMessages.innerHTML = ''; 
-                sendMessage("##INITIALIZE##", accessCode, true);
-            }
-        });
-
-        // --- Initial Load ---
+        skillTreeBtn.addEventListener('click', showSkillTree);
+        closeBtn.addEventListener('click', () => modal.style.display = 'none');
+        window.addEventListener('click', e => { if (e.target == modal) modal.style.display = 'none'; });
         window.addEventListener('load', () => {
             updateCodeDisplay();
-            sendMessage("##INITIALIZE##", accessCode, true);
+            sendMessage("##INITIALIZE##", access_code, true);
         });
     </script>
 </body>
