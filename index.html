@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Assembly Learning AI V2</title>
-    <script src="[https://cdn.jsdelivr.net/npm/marked/marked.min.js](https://cdn.jsdelivr.net/npm/marked/marked.min.js)"></script>
+    <!-- FIX 1: Correctly formatted script source URL -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         :root {
             --user-msg-bg: #007bff;
@@ -55,7 +56,7 @@
             border: none; background: var(--user-msg-bg); color: white; font-weight: bold; padding: 12px 20px;
             border-radius: 20px; cursor: pointer; transition: background 0.3s ease;
         }
-        /* --- NEW: Skill Tree Modal Styles --- */
+        /* --- Skill Tree Modal Styles --- */
         .modal {
             display: none; position: fixed; z-index: 1000; left: 0; top: 0;
             width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);
@@ -91,7 +92,7 @@
         </form>
     </main>
 
-    <!-- NEW: Skill Tree Modal HTML -->
+    <!-- Skill Tree Modal HTML -->
     <div id="skill-tree-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -105,7 +106,8 @@
     </div>
 
     <script>
-        const API_URL = '[http://165.227.109.220:8000](http://165.227.109.220:8000)'; 
+        // --- FIX 2: Correctly formatted API URL ---
+        const API_URL = 'http://165.227.109.220:8000'; 
         const STORAGE_KEY = 'assemblyLearnerCode';
 
         // --- DOM Elements ---
@@ -155,7 +157,7 @@
             codeDisplay.textContent = accessCode || 'None';
         }
 
-        // --- NEW: Skill Tree Logic ---
+        // --- Skill Tree Logic ---
         async function showSkillTree() {
             modal.style.display = 'block';
             skillTreeContainer.innerHTML = '<p>Loading your progress...</p>';
@@ -198,7 +200,8 @@
         window.addEventListener('click', e => { if (e.target == modal) modal.style.display = 'none'; });
         window.addEventListener('load', () => {
             updateCodeDisplay();
-            sendMessage("##INITIALIZE##", access_code, true);
+            // --- FIX 3: Use the correct variable name 'accessCode' ---
+            sendMessage("##INITIALIZE##", accessCode, true);
         });
     </script>
 </body>
